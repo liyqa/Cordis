@@ -1,0 +1,377 @@
+\section{实现与案例研究}\label{sec:5}
+
+本节介绍 Cordis，它将第\S\ref{sec:3}的形式模型实现为一个实用的编程抽象。Cordis 是一个时空可组合性的元框架：与针对特定领域（例如 Web 路由、ORM、UI 渲染）的应用框架不同，它不规定具体场景；其唯一职责是提供通用的动态组合语义。实现分为三层：(1) 核心库（第\S\ref{sec:5.1}节）直接实现效应和协效应系统；(2) 组件加载器（第\S\ref{sec:5.2}节）通过配置协调和热模块替换扩展核心；以及 (3) 应用框架如 Koishi（第\S\ref{sec:5.3}节）在前两层之上构建领域特定功能。
+
+\subsection{核心库}\label{sec:5.1}
+
+表~\ref{tab:2}总结了理论构造与其运行时对应物之间的映射关系。特别地，我们在本节中全程使用下面引入的运行时名称，而将理论符号保留给形式对应关系。我们还用 @@name 表示框架内部的符号键，因此 ctx[@@store] 中的方括号表示对上下文上不透明槽位的符号键访问，而非对字符串键映射的索引。
+
+\begin{table}[htbp]
+\centering
+\caption{理论到实现的对应关系}
+\label{tab:2}
+\begin{tabular}{ll}
+\hline
+理论（第\S\ref{sec:3}节，第\S\ref{sec:4}节） & 实现 \\
+\hline
+$\Gamma_\infty$ & ctx，一等上下文 \\
+$\gamma \in \Gamma$ & 上下文树及运行系统所触及的一切 \\
+$\mathfrak{E}_\Gamma, \mathfrak{E}_\Gamma^{\mathrm{iter}}$ & 返回/产出逆操作的效应回调 \\
+$\mathrm{effect}_\Gamma(e)$ & ctx.effect(callback) \\
+$\Sigma, \Sigma_{\mathrm{iso}}, \Sigma_{\mathrm{inter}}$ & ctx[@@store], ctx[@@isolate], ctx[@@intercept] \\
+$\mathrm{get}(k), \mathrm{set}(k, v)$ & ctx.get(key), ctx.set(key, value) \\
+$\mathrm{isolate}(k, r)$ & ctx.isolate(key, realm) \\
+$\mathrm{intercept}(k, \nu)$ & ctx.intercept(key, metadata) \\
+$\langle d, p, e, \pi, \sigma, \tau, \theta \rangle$ & fiber，$\mathfrak{C}_\Gamma$ 中组件的实例化 \\
+$\mathrm{dom}(F_\gamma)$ & 通过 ctx.registry 枚举 \\
+$n : \mathfrak{N}$ & fiber.uid \\
+$d : \mathfrak{D}_\Gamma$ & fiber.inject \\
+$p : \mathfrak{P}_\Gamma$ & 组件的 provide \\
+$e : \mathfrak{E}_\Gamma^*$ & fiber.apply \\
+$\pi : \mathfrak{N}$ & fiber.parent.fiber.uid，拥有其实例化上下文的 fiber \\
+派生实现（定义~27） & fiber.ctx，fiber 运行所在的子上下文 \\
+$\theta$（定义~44） & fiber.state，生命周期状态，其 LOADING 为 $\mathsf{Reloading}$，其 FAILED 为 $\mathsf{Inactive}(\xi)$ \\
+recover，累加器 $g$ & fiber.dispose，累加器 \\
+$\omega$（定义~44） & fiber.committed，已提交视图 \\
+$\mathrm{provider}_k(\gamma)$ & 一个 Impl，其 provider fiber 为 ACTIVE \\
+$\mathrm{target}(\gamma, n)$ & fiber.target，由 refresh 重算（算法~5），其中 $\bot$ 为 INACTIVE \\
+$\mathsf{Future}$，惯性（第 4.3.3 节） & fiber.inertia，进行中迁移的句柄 \\
+O-Insert, O-Retire（定义~47） & ctx.use 及其回调的逆操作（算法~4） \\
+O-Remove & 从运行时中丢弃的 fiber，uid 已清除 \\
+L-Begin, L-Iter, L-Finish & execute 的迭代循环（算法~1） \\
+L-Divert & 守卫在迭代边界失效（算法~1），或 reload 链式进入 unload \\
+L-Leave & refresh 将 fiber 标记为 UNLOADING（第~10 行） \\
+L-Unload & unload 及其惯性的链式调用（算法~5） \\
+L-Unload 上的守卫 & unload 等待被通知的依赖者（第~25 行） \\
+L-Raise & 记录在 fiber 上的错误，其 target 设为 $\bot$ \\
+\hline
+\end{tabular}
+\end{table}
+
+本节剩余部分自底向上构建核心库。第\S\ref{sec:5.1.1}节实现可逆效应，即上下文被修改的唯一原语；第\S\ref{sec:5.1.2}节在其上实现响应式协效应；第\S\ref{sec:5.1.3}节将两者组合为组件生命周期；第\S\ref{sec:5.1.4}节暴露基于它们构建的上下文级操作。
+
+\subsubsection{效应追踪}\label{sec:5.1.1}
+
+本节实现可逆效应（第\S\ref{subsec:3.1}节）。Cordis 中的每一次上下文修改都通过单一原语 ctx.effect 进行：协效应提供、组件实例化以及所有其他修改上下文的操作都归结为 ctx.effect 调用，因此通过上下文执行的任何操作都会被自动追踪并在组件卸载时恢复。在操作上，ctx.effect 是 $\mathrm{effect}_\Gamma^{\mathrm{iter}}$（定义~52）的实现：它接受类型为 $\mathfrak{E}_\Gamma^{\mathrm{iter}}$ 的回调并将其提升为 $\mathfrak{E}_{\partial\Gamma}^{\mathrm{iter}}$，产出一个 dispose 闭包，该闭包被调用时恢复该效应。Cordis 通过这一个操作同时接受 $\mathfrak{E}_\Gamma$ 和 $\mathfrak{E}_\Gamma^{\mathrm{iter}}$（临时多态）；我们以迭代器形式为代表，因为普通效应函数是产出单一逆操作的退化迭代器。该操作不检查的是 $\mathfrak{E}_\Gamma^*$ 所携带的见证：回调提供逆操作，而逆操作恢复其所伴随的效应是组件作者的责任而非运行时验证的性质。定理~61 是演算诉诸它的地方，第\S\ref{sec:6.1}节是该责任被界定的地方。
+
+算法~1 展示了 ctx.effect 的构造。我们用 $f \circ g$ 表示先运行 $g$ 再运行 $f$ 的处置器，用 $\mathrm{id}$ 表示空操作；因此将每个新逆操作前置得到后进先出（LIFO）恢复。
+
+\begin{lstlisting}[caption={效应追踪}]
+async function execute(callback, guard)
+  iter <- callback()
+  inverse <- id
+  while guard()
+    (value, done) <- await iter.next()
+    if value then inverse <- value \circ inverse
+    if done then break
+  return inverse
+
+function effect(ctx, callback)
+  armed <- true
+  task <- execute(callback, () => armed)
+  async function dispose()
+    if not armed then return
+    armed <- false
+    recover <- await task
+    recover()
+  ctx.dispose <- dispose \circ ctx.dispose
+  return dispose
+\end{lstlisting}
+
+引擎 execute 将回调作为效应迭代器（$\mathfrak{E}_\Gamma^{\mathrm{iter}}$，定义~51）驱动，并将每一步产出的逆操作折叠为单个复合体。在每一步之前，它查询调用者提供的守卫；一旦守卫触发，迭代停止，仅保留已累积的逆操作。这就是第 4.3.2 节的步边界中断：$\mathsf{Maybe}(\mathfrak{E}^{\mathrm{iter}})$ 延续由迭代器的 done 标志与 guard 共同实现。
+
+ctx.effect 是 execute 之上的薄包装，添加了两项内容。第一，自处置：守卫报告 armed 标志，返回的 dispose 将 armed 翻转为 false，这同时停止任何进行中的迭代并使恢复最多触发一次。触发两次将在效应从未产生的状态上应用逆操作，而没有任何东西保证它回退任何内容。第二，父组合：dispose 被前置到外层上下文的累积逆操作 ctx.dispose 中，因此子效应的逆操作本身是父效应上的效应，这就是 $\partial_\Gamma^2$ 的递归结构。组件层（第\S\ref{sec:5.1.3}节）复用相同的 execute，但其守卫测试 fiber.target 的稳定性而非 armed。
+
+\subsubsection{协效应操作}\label{sec:5.1.2}
+
+本节实现响应式协效应（第\S\ref{subsec:3.2}节）。所有协效应操作作用于每个上下文携带的三个符号键槽位：
+\begin{itemize}
+\item @@store：值存储 $\sigma : (r : R) \rightharpoonup \mathcal{V}_r$，从领域符号到类型化值；
+\item @@isolate：领域表 $\rho : \mathrm{Map}(K, R)$，从协效应键到领域符号；
+\item @@intercept：拦截表 $\iota : (k : K) \to \mathcal{M}_k$，为每个键分配其元数据。
+\end{itemize}
+前两者组合为两层解析 $k \to \rho(k) \to \sigma(\rho(k))$：ctx.get(key)（算法~2）从 @@isolate 读取领域符号 $\rho(k)$，然后从 @@store 读取绑定值 $\sigma(\rho(k))$。$\rho$ 间接层使隔离可以将键重定向到独立绑定，而 @@intercept 仅在绑定被访问时查询，调整其使用方式而非其解析目标。我们分两部分实现这些操作：(1) 提供与通知，安装或撤回绑定并将变更传播给依赖者；(2) 隔离与拦截，重塑键的解析方式。
+
+提供与通知。由于 $\mathrm{set}(k, v)$ 的类型为 $\mathfrak{E}_\Sigma$（第\S\ref{subsec:3.1}节），协效应提供是一个 ctx.effect 调用并继承其自动追踪和恢复。算法~2 实现了 ctx.set(key, value)，即具体的 $\mathrm{set}(k, v)$：回调将一个值绑定到领域符号 $\rho(k)$ 下的存储中，返回的 dispose 函数将其移除。安装和移除都调用 notify 将变更传播给依赖组件。
+
+\begin{lstlisting}[caption={协效应操作}]
+function get(ctx, key)
+  realm <- ctx[@@isolate][key]    // \rho(k)
+  return ctx[@@store][realm]      // \sigma(\rho(k))
+
+function set(ctx, key, value)
+  function callback()
+    realm <- ctx[@@isolate][key]  // \rho(k)
+    ctx[@@store][realm] <- value  // \sigma[\rho(k) \mapsto v]
+    notify(ctx, [key])
+    return function()
+      delete ctx[@@store][realm]  // \sigma \setminus \rho(k)
+      notify(ctx, [key])
+  return ctx.effect(callback)
+\end{lstlisting}
+
+算法~3 通过对每个活跃 fiber 测试变更键是否出现在其 fiber.inject 中并解析到相同领域来将每个绑定变更传播给依赖者；如果是，则调用 refresh（第\S\ref{sec:5.1.3}节）针对新状态重新评估该 fiber，并返回它重新评估的 fiber 以便调用者可以等待它们。这就是定义~26 的响应式分类：翻转满足状态的变更激活或停用 fiber，而 refresh 的幂等性使中性变更无害。这种重新评估与多种控制流的交互在第\S\ref{sec:5.1.3}节中展开。
+
+\begin{lstlisting}[caption={响应式通知}]
+function notify(ctx, keys)
+  affected <- \emptyset
+  for fiber in all_fibers do
+    for key in keys do
+      if key \in fiber.inject and fiber.ctx[@@isolate][key] = ctx[@@isolate][key] then
+        refresh(fiber)
+        affected <- affected \cup {fiber}
+        break
+  return affected
+\end{lstlisting}
+
+一个绑定仅当安装它的 fiber 为 ACTIVE 时才对依赖者可用，因此 refresh 针对活跃的提供者而非仅针对存储来解析每个声明键。这就是定义~46 的 provided by 关系，也正是它使得撤回在发生前一步对依赖者可见：已进入 UNLOADING 的提供者已停止提供，因此其依赖者重新计算不满足的目标视图并在其绑定仍全部到位时开始自身的拆卸。
+
+隔离与拦截。这两个操作在结构上做相同的事情：每个都派生一个子上下文，为 key 调整一个继承表而保持父上下文不变，因此恢复是隐式的：丢弃子上下文即可，无需运行显式逆操作。ctx.isolate(key, realm) 用 realm 覆盖领域映射 $\rho$，或默认生成一个新鲜符号（实现 isolate，定义~29），因此将不同符号分配给同一键的两个上下文解析到独立绑定。ctx.intercept(key, metadata) 将元数据合并到拦截表 $\iota$ 中（实现 intercept，定义~31）：按照该定义，新元数据与上下文已为 key 携带的内容组合并优先于它。
+
+\subsubsection{组件生命周期}\label{sec:5.1.3}
+
+组件通过 ctx.use 实例化为 fiber。本节赋予 fiber（在第\S\ref{sec:5.1}节中引入）作为第 4.3.3 节的惯性状态机的操作语义。两个字段驱动下面的算法：fiber.parent，构成组件层次结构的 fiber.ctx 的父上下文（$\Gamma_\infty$ 的递归结构，第 3.3.1 节），以及 fiber.inertia，进行中异步迁移的句柄（空闲时为 null）。
+
+算法~4 展示组件实例化。组件将协效应规范 component.inject（$d$）与效应函数 component.apply 配对；实例化将组件的 config 绑定到 fiber.apply（第~9 行），即生命周期随后运行的配置应用效应函数（$e$）。回调函数（第~2 行）是在父 fiber 中追踪的效应：执行时，它通过调用 refresh（算法~5）启动子组件的生命周期；恢复时，它将子组件的 target 强制设为 $\bot$ 并触发 unload。这就是定义~47 的注册原语，callback 为其 O-Insert，callback 返回的闭包为其 O-Retire：实例化是父组件的普通追踪效应，因此卸载父组件级联到其子组件。
+
+\begin{lstlisting}[caption={组件实例化}]
+function use(ctx, component, config)
+  function callback()
+    refresh(fiber)
+    return function()
+      fiber.target <- \bot
+      unload(fiber)
+  fiber <- Fiber(parent: ctx, inject: component.inject)
+  fiber.ctx <- ctx[fiber \mapsto fiber]
+  fiber.apply <- () => component.apply(fiber.ctx, config)
+  ctx.effect(callback)
+  return fiber
+\end{lstlisting}
+
+算法~5 实现第 4.3.3 节的惯性状态机，其中 reload 和 unload 是惯性的：一旦进入，迁移在系统响应目标状态变更之前运行至完成。它使用协效应存储上的两个辅助查找：resolve(inject) 返回声明键当前解析到的绑定，provided(fiber) 返回此 fiber 安装了绑定的键。refresh 函数从协效应存储重新计算 fiber.target，如果 fiber 尚未处于迁移中，则启动 reload 或 unload 任务$^2$。reload 函数记录当前目标并执行组件的效应函数 apply。完成时，它检查目标是否仍然匹配：如果是，fiber 进入 ACTIVE；如果不是（无论新目标是 $\bot$ 还是不同的提供者集合），它链式进入 unload。对称地，unload 以 LIFO 顺序恢复所有追踪的效应，然后进入 INACTIVE 或链式进入 reload。这种互递归实现了惯性属性：一旦迁移开始，它在任何新迁移可以启动之前完成。
+
+\begin{lstlisting}[caption={组件生命周期}]
+function refresh(fiber)
+  target <- target(\gamma, n)
+  if target = fiber.target then return
+  fiber.target <- target
+  if fiber.inertia then return
+  if target \neq \bot then
+    fiber.state <- LOADING
+    fiber.inertia <- create_task(reload(fiber))
+  else
+    fiber.state <- UNLOADING
+    fiber.inertia <- create_task(unload(fiber))
+
+async function reload(fiber)
+  target_0 <- fiber.target
+  fiber.committed <- resolve(fiber.inject)
+  recover <- await execute(fiber.apply, () => fiber.target = target_0)
+  fiber.dispose <- recover \circ fiber.dispose
+  if fiber.target = target_0 then
+    fiber.state <- ACTIVE
+    notify(fiber.ctx, provided(fiber))
+    fiber.inertia <- null
+  else
+    fiber.state <- UNLOADING
+    fiber.inertia <- create_task(unload(fiber))
+
+async function unload(fiber)
+  await all(notify(fiber.ctx, provided(fiber)).map(f => f.await()))
+  await fiber.dispose()
+  fiber.dispose <- id
+  fiber.committed <- \bot
+  if fiber.target = \bot then
+    fiber.state <- INACTIVE
+    fiber.inertia <- null
+  else
+    fiber.state <- LOADING
+    fiber.inertia <- create_task(reload(fiber))
+\end{lstlisting}
+
+fiber.target 通过针对当前协效应存储解析每个声明键并将提供它的 fiber 的 uid 元组化来计算，因此它是 $\mathrm{target}(\gamma, n)$（定义~46）的摘要。通过其提供者而非其值来识别绑定使得与记录目标的单次比较就足够了：uid 是新鲜抽取且永不重用的，因此被替换的提供者不能与它替换的那个混淆，即使两者提供相等的值。由于 notify（第\S\ref{sec:5.1.2}节）在每次协效应变更时重新计算目标，fiber 恰好在其某个声明键开始由不同 fiber 提供时重新加载。原地覆盖自身绑定的提供者因此不被观察到；想要其替换传播的组件撤回绑定并重新安装。
+
+算法在两个互补层面运行。在迁移层面，reload 和 unload 在完成时检查目标，实现跨迁移的惯性链式调用。在每次迁移内的迭代层面，效应执行（算法~1）在每个迭代边界检查目标，实现单次迁移内的部分回滚。这两个机制分别对应第 4.3.3 节的迁移间链式调用和定理~64 所依赖的迁移内过期检查。
+
+三行承载了定理~63 的协效应排序，它们各自的位置正是排序成立的原因。reload 在第~14 行提交解析视图，unload 仅在每个逆操作运行后才丢弃它，因此 fiber 在加载期间（包括其自身拆卸）读取相同的绑定。refresh 在第~10 行迁移任务创建之前将 fiber 标记为 UNLOADING，这是 L-Leave 步：fiber 停止提供，依赖者在其任何逆操作被调度之前针对此重新计算。unload 然后在第~25 行等待每个被通知的依赖者达到 INACTIVE，这是 L-Unload 上的守卫；notify 仅当依赖者的声明键解析到与提供者相同的领域符号时才接纳该依赖者，这是守卫要求依赖者从该 fiber 而非仅声明它来看到键的运行时形式。等待位于整个恢复之前而非在被等待的某个逆操作内部，因为 fiber.dispose 并发启动 fiber 的效应，放在其中一个内部的等待会使其余的变得无序。终止遵循定理~66：fiber 只等待已停止可满足的依赖者，而本身是提供者的依赖者以相同方式等待自己的依赖者，因此提供者图按需遍历而非预先分析。
+
+\subsubsection{上下文访问}\label{sec:5.1.4}
+
+第\S\ref{sec:5.1.2}节的协效应操作构成反射式 API：协效应用 ctx.set(key, value) 写入，用 ctx.get(key) 读取，均以名称为键。Cordis 在此反射式 API 之上叠加了第二种更原生的扩展和消费上下文的方式：属性访问。组件可以将协效应作为属性 ctx[key] 访问，仿佛它是上下文的原生结构，而非通过方法调用。在 TypeScript 中，Cordis 用 Proxy 实现这一点，其 get 陷阱中介每次属性访问。算法~6 展示上下文如何将此类访问解析为协效应，建立在第\S\ref{sec:5.1.2}节的原语 get 之上。
+
+\begin{lstlisting}[caption={代理中介的上下文访问}]
+function resolve(ctx, key)
+  fiber <- ctx.fiber
+  repeat
+    if key \in fiber.committed then return fiber.committed[key]
+    if key \in fiber.inject then throw INACTIVE_ACCESS
+    if fiber = root then throw UNDECLARED_ACCESS
+    fiber <- fiber.parent.fiber
+\end{lstlisting}
+
+算法~6 从访问上下文沿 fiber 链向上遍历：在第一个其已提交视图绑定 key 的 fiber 处，访问被授权并返回该绑定；如果遍历到达声明 key 但未提交它的 fiber，则 fiber 未加载且访问失败；如果到达根而没有任何声明，则访问因未声明而被拒绝。这是代理与裸 ctx.get 的区别所在：ctx.get(key) 是针对存储的查找，返回绑定值或无值且从不失败，而代理针对访问 fiber 自身的视图解析并在使用点强制执行协效应规范 $d$。读取视图而非存储也是定理~63 所依赖的，因为它使依赖关系对于其拆卸由该依赖关系消失所触发的组件仍可读。
+
+这种拒绝是在访问点执行的运行时检查。因为组件的协效应规范 $d$ 是静态声明的，同样的违规原则上可在编译时检测，通过在执行前针对声明的 $d$ 解析每个 ctx[key]；第\S\ref{sec:6.4}节讨论宿主语言的类型级依赖声明和编译时元编程如何执行完全相同的中介。
+
+\subsection{组件加载器}\label{sec:5.2}
+
+核心库为组件开发者提供了动态组合的命令式原语，如 ctx.effect、ctx.use 和 ctx.set。一个独立的问题出现在应用编排者面前，他们需要将既有组件组装成运行中的系统并在其生命周期内调整组合。组件加载器通过引入声明式配置层来解决此问题：编排者将期望的组合指定为持久数据结构，加载器将此规范的变更翻译为相应的命令式 fiber 操作。
+
+\subsubsection{声明式配置}\label{sec:5.2.1}
+
+第\S\ref{sec:4}节将运行系统分解为 fiber，每个 fiber 是一个组件的实例化。实例化所需的一切都可以声明，因此编排者可以将整个系统描述为声明式配置：加载器将其实现为 fiber 并与之保持同步的持久记录。
+
+条目。配置由条目组成。每个条目指定一个 fiber 并管理它，绑定双向运行：加载器通过调整 fiber 响应条目字段的变更，修改自身配置或禁用自身的组件将变更写回其条目。
+
+\textbf{定义~74。} 条目声明单个 fiber，记录：
+\begin{itemize}
+\item id — 稳定标识符，在其组的子列表变更时用作协调键；
+\item url — 要实例化的组件模块的 URL；
+\item isolate — 应用于条目上下文的隔离注解；
+\item intercept — 应用于条目上下文的拦截注解；
+\item config — 绑定到组件以形成其效应函数 apply 的配置；
+\item disabled — 条目是否被管理性关闭。
+\end{itemize}
+
+条目之所以能作为忠实规范，是因为支撑 fiber 的恰好是条目所记录的。定义~67 的支撑集读取 $\tau$、$\pi$、$d$ 和 $p$ 且别无其他，而条目给出全部四个：disabled 给出 $\tau$，条目在树中的父节点给出 $\pi$，url 选择声明 $d$ 和 $p$ 的组件。支撑集未读取的字段是 fiber 的运行时状态，实例化也不需要它，引理~70 将支撑集等同于静默状态（定义~49）的 $\mathsf{Active}$ fiber，前提是每个组件安装其声明的每个键（定义~69）。
+
+这些条目构成配置树，即系统加载内容的权威记录。条目可以是映射到单个 fiber 的叶节点，或其组件可以依次加载更多组件，使条目成为分支节点。Cordis 为此类分组和嵌套加载提供组件：@cordisjs/group 将子条目列表作为其配置并将其作为子组加载，@cordisjs/include 加载外部配置文件（YAML 或 JSON）并将其条目嫁接为嵌套子树。两者都是基于定义~47（算法~4）的注册原语的普通组件，因此嵌套树保持在演算内，以下结果对其成立。
+
+协调。当条目的记录变更时，加载器增量协调而非将 fiber 拆除并整体重建。以这种方式协调是可靠的，理由来自元理论。
+\begin{itemize}
+\item 定理~73 使静默状态成为仅最终配置的函数：无论加载器沿途执行什么实例化和退役，无论以何种顺序，系统静默到从零加载最终配置会到达的状态。哪些组件最终被加载仅从声明中读取，前提是每个组件安装其声明的每个键（定义~69）；声明键并仅在某些配置下安装它的组件仍然是加载器可以协调的，但加载组件的集合则也取决于那些配置。
+\item 定理~66 证明系统确实会静默，因此协调一旦发出其实例化和退役即告完成。
+\item 推论~62 将离开中 fiber 对状态的贡献置于零，因此重建一个条目撤回其 fiber 安装的内容并保持周围 fiber 不变。
+\item 定理~63 允许条目被一起实例化，编排者无需安排加载顺序：声明键尚未被提供的 fiber 在其 L-Begin 处等待，而其提供者离开的 fiber 在它之前被停用。因此依赖约束的是 fiber 何时激活而非其模块何时被获取和评估，所以加载器并发加载模块，这是启动大型配置耗时的地方。
+\end{itemize}
+
+在条目声明的 fiber 之上，加载器根据条目的哪些字段变更进行分派并为每个字段应用最小破坏性操作。
+\begin{itemize}
+\item id, url — 重建条目，因为其身份或其组件已变更；
+\item isolate — 重新分配条目的领域（算法~7）；
+\item intercept — 原地更新，因为拦截元数据在读取时查询且无需重新加载；
+\item config — 交给组件，由组件决定如何应用新载荷，通常通过与先前载荷的差异比较并仅在实质性变更时重新加载。特别地，@cordisjs/group 条目的 config 是其子条目列表，因此它将更新应用为按子 id 的键控差异，创建、移除或更新每个子条目；由于更新存活的子条目重新进入相同的按字段分派，组协调和条目更新沿树一起递归；
+\item disabled — 设置时卸载 fiber，清除时重新加载。
+\end{itemize}
+
+托管领域。核心中的隔离派生覆盖一键领域表 $\rho$ 的子上下文（第\S\ref{sec:5.1.2}节），这在上下文树静止时足够。条目可能在运行时在组之间移动，因此加载器管理自己的领域，isolate 字段为每个键在两个作用域规则之间选择。值为 true 请求局部领域，专属于条目并由其 id 标记，条目移动到哪里就携带到哪里；字符串请求全局领域，由命名该字符串的每个条目共享，因此移动此类条目改变的是它共享绑定的条目而非它所属的领域。一旦没有条目命名某个领域，该领域即被丢弃。
+
+重新分配条目的领域取决于哪些键变更了领域、条目自身是否是变更键的提供者，以及通知哪些依赖者。中间的问题较难，因为领域符号可能被多个 fiber 共享而其中只有一个是提供者。加载器用分隔符回答它：每个键一个符号 $\delta_k$，每个上下文在其下存储自己的标签。分隔符写在上下文上并由其后代继承，因此条目的标签与提供者的标签恰好在该条目与提供者在 $k$ 的一个隔离作用域内被派生时一致，这正是 $k$ 处的绑定是条目自身的且必须随之移动的情况。
+
+\begin{lstlisting}[caption={隔离领域重新分配}]
+function patch_isolation(entry, \rho')
+  \rho <- entry.ctx[@@isolate]
+  store <- entry.ctx[@@store]
+  \Delta <- {k | \rho(k) \neq \rho'(k)}   // keys whose realm changes
+  for k in \Delta do
+    entry.ctx[\delta_k] <- fresh tag
+    diff[k] <- (\rho(k), \rho'(k), entry.ctx[\delta_k], store[\rho(k)].fiber.ctx[\delta_k])
+  entry.ctx[@@isolate] <- \rho'
+  reload(entry.fiber)
+  for k in \Delta do
+    (s_1, s_2, d_1, d_2) <- diff[k]
+    if d_1 = d_2 and store[s_1] and not store[s_2] then
+      store[s_2] <- store[s_1]
+      delete store[s_1]
+
+function affected(fiber, k)
+  (s_1, s_2, d_1, d_2) <- diff[k]
+  return fiber.ctx[@@isolate][k] \in {s_1, s_2} and (fiber.ctx[\delta_k] = d_1) \neq (d_2 = d_1)
+notify(entry.ctx, \Delta, affected)   // in place of the realm test of Algorithm 3
+\end{lstlisting}
+
+该测试依赖于分隔符的一个性质。$\delta_k$ 下的标签写在条目的上下文上并由从它派生的每个上下文继承，且在每次重新分配时重新抽取，因此对于上下文 $\gamma'$
+\begin{equation}\label{eq:5.1}
+\gamma'[\delta_k] = d_1 \iff \gamma' \mbox{ 从条目的上下文派生}
+\end{equation}
+用 $\mathrm{own}(\gamma')$ 表示该条件，$d_2 = d_1$ 是提供者处的实例。重新分配将满足 own 的上下文从 $s_1$ 移至 $s_2$ 并将其余的留在原地，而通过上面的循环它恰好当提供者满足 own 时将绑定移至 $s_2$。依赖者在 $k$ 处的自身领域是绑定所在领域时看到绑定。在 own 在依赖者和提供者上一致之处，两者都移动或都不移动，因此依赖者之后看到绑定恰好当之前看到时。在 own 分离它们之处，一方移动另一方不动，因此依赖者获得或失去绑定。不等式是那种分离，而成员测试丢弃了在两个领域都不解析 $k$ 的依赖者，移动的任何部分都不会触及它们。
+
+\subsubsection{热模块替换}\label{sec:5.2.2}
+
+热模块替换（HMR）在模块级别应用可逆效应模式：当源文件变更时（通常在开发期间），系统在不重启进程的情况下原地替换受影响的模块。因为 fiber 已经界定了其组件的所有效应和协效应，本身是组件的模块可以仅通过 fiber 操作替换：处置旧 fiber 恢复组件安装的一切，从重新加载的模块实例化的新 fiber 重新安装。因此 HMR 不需要开发者标注的接受边界，与 Webpack\cite{ref46}或 Vite\cite{ref47}的 HMR 不同。
+
+@cordisjs/hmr 组件提供 HMR 引擎，分三个阶段运行。
+
+阶段 1：模块分类。引擎接受两个输入：暂存集（自上次重新加载以来内容已变更的文件 URL）和外部集（无法热替换而触发完全重启的模块）。用 get\_imports(url) 表示 url 直接导入的模块，它分类变更的依赖子图，标记每个模块为已接受或已拒绝：
+
+\begin{lstlisting}[caption={模块分类}]
+function classify(stashed, externals)
+  accepted <- stashed
+  declined <- externals
+  pending <- \emptyset
+  for url in stashed do
+    pending <- pending \cup (get_imports(url) \setminus (accepted \cup declined))
+  repeat
+    progress <- false
+    for url in pending do
+      if get_imports(url) \cap accepted \neq \emptyset then
+        accepted <- accepted \cup {url}
+        pending <- pending \setminus {url}
+        progress <- true
+      else if get_imports(url) \subseteq declined then
+        declined <- declined \cup {url}
+        pending <- pending \setminus {url}
+        progress <- true
+      else
+        pending <- pending \cup (get_imports(url) \setminus (accepted \cup declined))
+  until not progress
+  declined <- declined \cup pending
+  return (accepted, declined)
+\end{lstlisting}
+
+以暂存文件的导入为种子，不动点一旦某个模块的一个导入被接受就接受该模块，一旦其所有导入被拒绝就拒绝它；任何仍未决定的模块，被导入循环捕获，默认为被拒绝。
+
+阶段 2：过期条目检测。使用 accepted 和 declined，引擎然后将组件条目筛选为过期条目，其依赖树到达变更模块。它用 get\_dependencies 遍历每个条目的树，该函数收集模块的传递导入同时将 declined 作为边界：
+
+\begin{lstlisting}[caption={过期条目检测}]
+function get_dependencies(root, declined)
+  deps <- \emptyset
+  function traverse(url)
+    if url \in deps or url \in declined then return
+    deps <- deps \cup {url}
+    for child in get_imports(url) do traverse(child)
+  traverse(root)
+  return deps
+
+function detect(entries, accepted, declined)
+  stale_entries <- \emptyset
+  for entry in entries do
+    tree <- get_dependencies(entry.url, declined)
+    if tree \cap accepted \neq \emptyset then
+      accepted <- accepted \cup tree
+      stale_entries <- stale_entries \cup {entry}
+  return stale_entries
+\end{lstlisting}
+
+条目恰好在其树与 accepted 相交时过期；该树随后被折叠进 accepted，因此沿其的每个过期模块在下一阶段被无效化。
+
+阶段 3：事务性重新加载。最后，引擎重新加载过期条目。它无效化已接受模块的缓存$^3$，备份每个被移除的模块以启用回滚，然后按 url 重新导入每个过期条目的组件模块并交换为新 fiber：
+
+\begin{lstlisting}[caption={事务性模块重新加载}]
+function reload(ctx, accepted, stale_entries)
+  backup <- invalidate_caches(accepted)
+  try
+    for entry in stale_entries do
+      entry.fiber.dispose()
+      entry.fiber <- ctx.use(import(entry.url), entry.config)
+  catch error
+    restore_caches(backup)
+    for entry in stale_entries do
+      entry.fiber.dispose()
+      entry.fiber <- ctx.use(backup[entry.url], entry.config)
+    throw error
+\end{lstlisting}
+
+事务性保证确保系统永远不会进入半重加载状态：如果任何模块导入失败（例如，由于语法错误），缓存被恢复，每个过期条目从 backup[entry.url]（即缓存刚刚被恢复的先前组件）重建，撤销已完成的交换。
+
+\subsection{案例研究：Koishi}\label{sec:5.3}
+
+Koishi 是一个基于 Cordis 构建的开源聊天机器人应用框架$^4$。经过四年多的开发，它已积累了超过 4000 个社区贡献的插件$^5$，涵盖即时通讯（IM）适配器、数据库驱动、管理控制台和终端用户功能。其规模和多样性使其成为 Cordis 动态可组合性在生产环境中的代表性验证。
+
+\textbf{元框架的表达力与通用性。} Koishi 作为服务器端机器人运行，其每个功能都通过第\S\ref{sec:5.1}节的上下文原语实现为插件；Koishi 自身仅贡献聊天机器人领域的词汇。相同模型以完全不同的运行时重现：Koishi 的 Web 控制台是第二个独立的 Cordis 应用，其插件组合浏览器及其用户界面的原语而非服务器的原语。上述不同场景确立了第\S\ref{sec:3}节模型的两个属性。(1) 它具有表达力：其原语足以承载完整的生产系统，宿主框架仅提供领域词汇。(2) 它具有通用性：它固定效应和协效应如何组合而将其语义留给每个应用，因此既不预设特定领域也不预设特定运行时。
+
+\textbf{无认知负担的时间可组合性。} 第\S\ref{sec:1.2.1}节中调研的插件系统无法在不重启扩展的情况下卸载单个扩展的效应。Koishi 例行执行此操作：编排者从控制台禁用插件，其效应原地撤回；在开发期间，HMR 引擎在保存时重新应用已编辑的插件，同时保留系统其他地方的缓存状态和活跃连接。Cordis 使这种移除不仅可能，而且对插件作者毫不费力。因为通过上下文执行的效应被追踪且其逆操作自动组合（第\S\ref{subsec:3.1}节），即使缺乏经验的作者也能获得插件上下文中介效应的有序清理而无需编写卸载路径。这实现了第\S\ref{sec:1.2.1}节所指出缺失的关注点局部性：否则依赖每位作者勤勉的正确性改为由抽象一次性承担。
+
+\textbf{开放生态系统中的空间可组合性。} 与第\S\ref{sec:1.2.1}节中插件间依赖基本不存在的插件系统形成对比，Koishi 的生态系统展现出真正的依赖拓扑：IM 适配器提供对每个消息平台的访问，数据库驱动提供持久存储，功能插件将这些声明为协效应并访问它们。在运行时重新配置提供者（例如切换存储后端或重新连接适配器）仅重新激活解析依赖发生变更的依赖者（第\S\ref{subsec:3.2}节）；依赖不可用的插件保持非活跃直到它出现，而不会报错。案例研究所证实的是这种组合在独立编写的代码之间成立：插件及其依赖通常由不同作者编写，他们仅在连接它们的协效应上协调，因此响应式协效应在独立贡献者的开放生态系统中保持组装的一致性。
+
+\textbf{对有效性的威胁。} 此处的证据来自单一宿主语言中的单一生态系统，因此无法将该范式的优点与其 TypeScript 实现或 Koishi 特定领域的优点区分开来，且它是观察性的而非与替代架构的受控比较。因此案例研究确立的是存在性与采纳结果而非定量结果；相对于基线衡量抽象的开销及其对开发者生产力的影响仍是未来工作。

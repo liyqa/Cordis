@@ -1,0 +1,750 @@
+\section{可逆效应与响应式协效应}\label{sec:3}
+
+本节将第\S\ref{sec:2}中引入的效应与协效应概念提升为运行时机制，构建动态组合的理论。核心思想是将承载效应与协效应的定型上下文转化为上下文类型，即把上下文具体化为一等实体的运行时可操作类型。对于效应类型，我们将其建模为附带逆元的上下文变换，实现局部的时间可组合性。对于协效应上下文，我们将其建模为承载依赖信息的类型，实现局部的空间可组合性。协效应上的观测等价随后为效应提供独立性。承载效应与协效应的统一上下文本身构成了一种编程范式。
+
+\subsection{可逆效应}\label{subsec:3.1}
+
+时间可组合性是在运行时加载和卸载组件，使得卸载时共享环境恢复到组合前状态的能力。这要求组件对环境的每一次修改既是可追踪的，又是可恢复的。因此，我们将效应建模为$\Gamma \to \Gamma \times (\Gamma \to \Gamma)$类型的函数：施加于当前上下文，它产生修改后的上下文连同显式的逆元。提供该逆元使效应可被逆转，将其返回运行时使效应可被追踪。我们称此类效应为可逆的：通过在执行期间追踪和组合这些逆元，完全的环境恢复成为一种结构性保证。
+
+\subsubsection{效应上下文}\label{subsubsec:3.1.1}
+
+给定任何非纯函数$f_{\mathrm{impure}}: X \to Y$，我们将其转化为纯形式$f: \Gamma \times X \to \Gamma \times Y$，其中$\Gamma$是上下文，所有可能的副作用可以表示为$\Gamma$上的变换。对于任何固定输入$x: X$，诱导映射$\gamma \mapsto \mathrm{pr}_1(f(\gamma, x))$独立于返回值地捕获了$f$的副作用。因此$\Gamma$上的效应存在于变换$\Gamma \to \Gamma$在复合$\circ$下的幺半群中，其中每个幺半群公理都有作为效应性质的直接解读：
+\begin{itemize}
+\item 封闭性：两个效应的顺序复合仍是效应；
+\item 结合律：复合效应与括号方式无关；
+\item 单位元：$\mathrm{id}_\Gamma$，$\Gamma$上的恒等函数，作为复合的单位元。
+\end{itemize}
+
+为了建模可撤销的效应，我们将每个变换$f$与另一个撤销$f$的变换$g$配对，并称$g$为$f$的左逆，全文简称为逆元。撤销是单向的：逆元所满足的是$g \circ f$而非$f \circ g$。变换对具有自身的乘法：
+
+\begin{definition}\label{def:3.1}
+定义上下文变换对的扭曲复合为
+\begin{equation}\label{eq:3.4}
+(f_1, g_1) \circ (f_2, g_2) \coloneqq (f_1 \circ f_2, g_2 \circ g_1)
+\end{equation}
+\end{definition}
+
+与$\circ$本身一样，左操作数在右操作数之后作用，逆元以相反顺序累积。这使$(\Gamma \to \Gamma) \times (\Gamma \to \Gamma)$成为以$(\mathrm{id}_\Gamma, \mathrm{id}_\Gamma)$为单位元的幺半群，即变换幺半群与其对偶的积，我们称之为$\Gamma$上的扭曲复合幺半群$\mathfrak{T}_\Gamma$。
+
+为了在上下文本身中追踪效应，我们引入以下定义：
+
+\begin{definition}\label{def:3.2}
+给定上下文$\Gamma$，定义其效应上下文为：
+\begin{equation}\label{eq:3.5}
+\partial\Gamma \coloneqq \Gamma \times (\Gamma \to \Gamma)
+\end{equation}
+\end{definition}
+
+它可以理解为一个对$(\gamma, \varphi)$，其中：
+\begin{itemize}
+\item $\gamma: \Gamma$是当前上下文状态；
+\item $\varphi: \Gamma \to \Gamma$是累积器，即迄今为止所执行效应的逆元的复合，也是将上下文恢复到初始状态的函数。
+\end{itemize}
+
+特别地，初始效应上下文可以表示为$(\gamma_0, \mathrm{id}_\Gamma)$。
+
+我们也记$\partial^2\Gamma = \partial\Gamma \times (\partial\Gamma \to \partial\Gamma)$，以此类推形成塔。
+
+鉴于累积器$\varphi$的存在，对$\partial\Gamma$执行的所有效应都可以被追踪和恢复。我们现在给出追踪和恢复的具体构造。
+
+\begin{definition}\label{def:3.3}
+定义上下文函数对上的变换$\mathrm{track}_\Gamma$：
+\begin{equation}\label{eq:3.6}
+\mathrm{track}_\Gamma : (\Gamma \to \Gamma) \times (\Gamma \to \Gamma) \to \partial\Gamma \to \partial\Gamma
+\end{equation}
+\[
+\mathrm{track}_\Gamma = (f, g) \mapsto (\gamma, \varphi) \mapsto (f(\gamma), \varphi \circ g)
+\]
+\end{definition}
+
+该变换将前向函数$f$连同候选逆元$g$转化为效应上下文$\partial\Gamma$的变换。将$\mathrm{track}_\Gamma(f, g)$施加于状态$(\gamma, \varphi)$，通过$f$变换$\gamma$并将逆元$g$复合到$\varphi$上，从而在上下文中追踪$f$的效应。
+
+\begin{theorem}\label{thm:3.4}
+对于每个$(f, g) \in (\Gamma \to \Gamma) \times (\Gamma \to \Gamma)$，以下图表交换，即
+\begin{equation}\label{eq:3.7}
+\mathrm{pr}_1 \circ \mathrm{track}_\Gamma(f, g) = f \circ \mathrm{pr}_1
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+对于所有$(\gamma, \varphi) \in \partial\Gamma$：
+\[
+(\mathrm{pr}_1 \circ \mathrm{track}_\Gamma(f, g))(\gamma, \varphi) = \mathrm{pr}_1(f(\gamma), \varphi \circ g) = f(\gamma) = (f \circ \mathrm{pr}_1)(\gamma, \varphi)
+\]
+\end{proof}
+
+\begin{theorem}\label{thm:3.5}
+$\mathrm{track}_\Gamma$是从$\mathfrak{T}_\Gamma$到$\partial\Gamma \to \partial\Gamma$的幺半群同态。即，
+\begin{enumerate}
+\item $\mathrm{track}_\Gamma(\mathrm{id}_\Gamma, \mathrm{id}_\Gamma) = \mathrm{id}_{\partial\Gamma}$；
+\item 对于所有$(f_1, g_1), (f_2, g_2) \in \mathfrak{T}_\Gamma$，
+\begin{equation}\label{eq:3.8}
+\mathrm{track}_\Gamma((f_1, g_1) \circ (f_2, g_2)) = \mathrm{track}_\Gamma(f_1, g_1) \circ \mathrm{track}_\Gamma(f_2, g_2)
+\end{equation}
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+\begin{enumerate}
+\item 单位元映为单位元，因为$\mathrm{track}_\Gamma(\mathrm{id}_\Gamma, \mathrm{id}_\Gamma)(\gamma, \varphi) = (\gamma, \varphi \circ \mathrm{id}_\Gamma) = (\gamma, \varphi)$。
+\item 对于乘法，取任意$(\gamma, \varphi) \in \partial\Gamma$：
+\[
+(\mathrm{track}_\Gamma(f_1, g_1) \circ \mathrm{track}_\Gamma(f_2, g_2))(\gamma, \varphi) = \mathrm{track}_\Gamma(f_1, g_1)(f_2(\gamma), \varphi \circ g_2)
+\]
+\[
+= (f_1(f_2(\gamma)), \varphi \circ g_2 \circ g_1) = \mathrm{track}_\Gamma(f_1 \circ f_2, g_2 \circ g_1)(\gamma, \varphi)
+\]
+\end{enumerate}
+\end{proof}
+
+\begin{definition}\label{def:3.6}
+定义$\partial\Gamma$上的变换$\mathrm{recover}_\Gamma$：
+\begin{equation}\label{eq:3.9}
+\mathrm{recover}_\Gamma : \partial\Gamma \to \partial\Gamma
+\end{equation}
+\[
+\mathrm{recover}_\Gamma = (\gamma, \varphi) \mapsto (\varphi(\gamma), \mathrm{id}_\Gamma)
+\]
+\end{definition}
+
+该变换将恢复函数$\varphi$施加于当前状态$\gamma$，并将$\varphi$重置为单位元。下图说明了一组效应$\mathrm{track}(f_1, g_1), \cdots, \mathrm{track}(f_n, g_n)$施加于$\partial\Gamma$后，$\mathrm{recover}$如何将上下文恢复到初始状态：
+
+追踪效应后再执行恢复将初始效应上下文带回自身。每个追踪步骤所保留的是恢复本身的结果，无论从哪个状态执行：
+
+\begin{theorem}\label{thm:3.7}
+对于每个$(\gamma, \varphi) \in \partial\Gamma$和每个满足$g(f(\gamma)) = \gamma$的对$(f, g)$，
+\begin{equation}\label{eq:3.10}
+\mathrm{recover}_\Gamma(\mathrm{track}_\Gamma(f, g)(\gamma, \varphi)) = \mathrm{recover}_\Gamma(\gamma, \varphi)
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+\begin{align*}
+\mathrm{recover}_\Gamma(\mathrm{track}_\Gamma(f, g)(\gamma, \varphi)) &= \mathrm{recover}_\Gamma(f(\gamma), \varphi \circ g) \\
+&= (\varphi(g(f(\gamma))), \mathrm{id}_\Gamma) \\
+&= (\varphi(\gamma), \mathrm{id}_\Gamma) = \mathrm{recover}_\Gamma(\gamma, \varphi)
+\end{align*}
+\end{proof}
+
+一组对不需要单独论证。设$(f_1, g_1), \cdots, (f_n, g_n)$从$(\gamma, \varphi)$依次施加，记$\delta_0 = \gamma$和$\delta_i = f_i(\delta_{i-1})$。由定理\ref{thm:3.5}，复合$\mathrm{track}_\Gamma(f_n, g_n) \circ \cdots \circ \mathrm{track}_\Gamma(f_1, g_1)$是扭曲复合$(f_n \circ \cdots \circ f_1, g_1 \circ \cdots \circ g_n)$的$\mathrm{track}_\Gamma$，若对每个$i$有$g_i(\delta_i) = \delta_{i-1}$，则$(g_1 \circ \cdots \circ g_n)(\delta_n) = \delta_0 = \gamma$。因此该对在$\gamma$处满足定理\ref{thm:3.7}的假设，应用一次定理得到
+\begin{equation}\label{eq:3.11}
+\mathrm{recover}_\Gamma((\mathrm{track}_\Gamma(f_n, g_n) \circ \cdots \circ \mathrm{track}_\Gamma(f_1, g_1))(\gamma, \varphi)) = \mathrm{recover}_\Gamma(\gamma, \varphi)
+\end{equation}
+
+取$(\gamma, \varphi) = (\gamma_0, \mathrm{id}_\Gamma)$，恢复将以此方式到达的每个状态带回$(\gamma_0, \mathrm{id}_\Gamma)$。满足$g \circ f = \mathrm{id}_\Gamma$的对在每个状态都满足假设。
+
+恢复通过量$\varphi(\gamma)$读取状态，我们将$\varphi(\gamma) = \gamma_0$称为$\partial\Gamma$中状态的健康性不变式。
+
+\subsubsection{可逆效应函数}\label{subsubsec:3.1.2}
+
+前一节的追踪/恢复模型将逆元视为先验给定的：$\mathrm{track}_\Gamma(f, g)$在任何上下文状态出现之前就固定了$g$，因此一个$g$必须服务于效应被施加的每个状态。然而在实践中，每个效应的逆元并非先验已知的：它必须由调用者在效应施加点提供。此外，恢复是全有或全无的：它不能选择性地撤销一个效应而保留其他效应。为解决这两个问题，我们在输入和输出两侧分别增强模型：
+\begin{enumerate}
+\item 在输入侧，我们不仅变换$\Gamma$，还同时返回逆元函数，使逆元在效应施加处提供：$\Gamma \to \Gamma \times (\Gamma \to \Gamma)$，即$\Gamma \to \partial\Gamma$；
+\item 在输出侧，我们不仅变换$\partial\Gamma$，还同时返回逆元函数，使一个效应可被撤销而其他效应得以保留：$\partial\Gamma \to \partial\Gamma \times (\partial\Gamma \to \partial\Gamma)$，即$\partial\Gamma \to \partial^2\Gamma$。
+\end{enumerate}
+
+这种增强保持了输入与输出之间的结构一致性，因此我们仍然可以定义相应的理论来维护$\mathrm{track}$的数学性质。所得类型是效应函数$\mathfrak{E}_\Gamma$及其见证细化$\mathfrak{E}^*_\Gamma$：
+
+\begin{definition}\label{def:3.8}
+定义效应函数$\mathfrak{E}_\Gamma$和见证效应函数$\mathfrak{E}^*_\Gamma$为：
+\begin{equation}\label{eq:3.12}
+\mathfrak{E}_\Gamma \coloneqq \Gamma \to \Gamma \times (\Gamma \to \Gamma)
+\end{equation}
+\[
+\mathfrak{E}^*_\Gamma \coloneqq (e: \Gamma \to \Gamma \times (\Gamma \to \Gamma)) \times ((\gamma: \Gamma) \to ((\delta: \Gamma) \times (g: \Gamma \to \Gamma) \times ((\delta, g) = e(\gamma) \to g(\delta) = \gamma)))
+\]
+\end{definition}
+
+其中$e(\gamma)$产生一个对$(\delta, g)$，表示：
+\begin{itemize}
+\item $\delta: \Gamma$是新上下文；
+\item $g: \Gamma \to \Gamma$是当前效应的逆元函数。
+\end{itemize}
+
+$\mathfrak{E}^*_\Gamma$的一个元素按状态选择其逆元，约束$g(\delta) = \gamma$将选择限制在逆转效应施加处的效果上，而$g$在其他任何地方不受约束。满足$g \circ f = \mathrm{id}_\Gamma$的单个$g$在每个状态同时满足约束，并通过$(f, g) \mapsto \gamma \mapsto (f(\gamma), g)$诱导$\mathfrak{E}^*_\Gamma$的一个元素，定理\ref{thm:3.11}表明这是一个同态。约束可以可视化为以下交换图，确保逆元$e$返回确实逆转了$e$被施加处的变换：
+
+由于效应函数$\mathfrak{E}_\Gamma$不再是上下文上的自同态，它们不能直接复合。因此我们定义效应复合的新运算：
+
+\begin{definition}\label{def:3.9}
+给定函数$f, g \in \mathfrak{E}_\Gamma$，定义其效应复合$f \diamond g$为：
+\begin{equation}\label{eq:3.13}
+f \diamond g : \Gamma \to \partial\Gamma
+\end{equation}
+\[
+f \diamond g = \gamma \mapsto \mathbf{let}\;(\delta, s) = g(\gamma)\;\mathbf{in}\;\mathbf{let}\;(\varepsilon, t) = f(\delta)\;\mathbf{in}\;(\varepsilon, s \circ t)
+\]
+\end{definition}
+
+\begin{theorem}\label{thm:3.10}
+效应复合将$\mathfrak{T}_\Gamma$的幺半群结构转移到$\mathfrak{E}_\Gamma$。即，
+\begin{enumerate}
+\item $(\mathfrak{E}_\Gamma, \diamond)$是以$\eta_\Gamma \coloneqq \gamma \mapsto (\gamma, \mathrm{id}_\Gamma)$为单位元的幺半群；
+\item 映射$(f, g) \mapsto \gamma \mapsto (f(\gamma), g)$是从$\mathfrak{T}_\Gamma$到$\mathfrak{E}_\Gamma$的幺半群同态。
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+\begin{enumerate}
+\item 结合律和单位元律由$\circ$的相应定律逐分量得到。
+\item 记$e_i = \gamma \mapsto (f_i(\gamma), g_i)$；则$(e_1 \diamond e_2)(\gamma) = (f_1(f_2(\gamma)), g_2 \circ g_1)$，即$(f_1, g_1) \circ (f_2, g_2)$的像，而$(\mathrm{id}_\Gamma, \mathrm{id}_\Gamma)$映射到$\eta_\Gamma$。
+\end{enumerate}
+\end{proof}
+
+\begin{theorem}\label{thm:3.11}
+见证性在效应复合下保持，一致逆元在每个状态见证。即，
+\begin{enumerate}
+\item $\mathfrak{E}^*_\Gamma$是$\mathfrak{E}_\Gamma$的子幺半群；
+\item 定理\ref{thm:3.10}的同态将每个满足$g \circ f = \mathrm{id}_\Gamma$的对带入$\mathfrak{E}^*_\Gamma$。
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+\begin{enumerate}
+\item 由于$\mathrm{id}_\Gamma(\gamma) = \gamma$，单位元属于$\mathfrak{E}^*_\Gamma$。对于封闭性，取$f, g \in \mathfrak{E}^*_\Gamma$和任意$\gamma \in \Gamma$，令$(\delta, s) = g(\gamma)$，$(\varepsilon, t) = f(\delta)$，使得$(f \diamond g)(\gamma) = (\varepsilon, s \circ t)$。则$s(\delta) = \gamma$且$t(\varepsilon) = \delta$，因此$(s \circ t)(\varepsilon) = s(\delta) = \gamma$。
+\item $g \circ f = \mathrm{id}_\Gamma$在每个$\gamma$给出$g(f(\gamma)) = \gamma$，因此这样一对的像在每个状态都被见证。
+\end{enumerate}
+\end{proof}
+
+正如$\mathrm{track}$将$\Gamma$上的变换对提升到$\partial\Gamma$，我们定义$\mathrm{effect}$将$\mathfrak{E}_\Gamma$提升到$\mathfrak{E}_{\partial\Gamma}$：
+
+\begin{definition}\label{def:3.12}
+定义效应函数变换$\mathrm{effect}_\Gamma$为：
+\begin{equation}\label{eq:3.14}
+\mathrm{effect}_\Gamma : \mathfrak{E}_\Gamma \to \partial\Gamma \to \partial^2\Gamma
+\end{equation}
+\[
+\mathrm{effect}_\Gamma = e \mapsto (\gamma, \varphi) \mapsto \mathbf{let}\;(\delta, g) = e(\gamma)\;\mathbf{in}\;((\delta, \varphi \circ g), \mathrm{track}_\Gamma(g, \mathrm{pr}_1 \circ e))
+\]
+\end{definition}
+
+由于$\mathrm{effect}_\Gamma(e)$本身属于$\mathfrak{E}_{\partial\Gamma}$，它返回的逆元是定义\ref{def:3.8}在更高一层意义上的逆元。该逆元本身是交换效应两个方向所得对的追踪。普通追踪规则再次适用：撤销效应本身也是一种效应，通过$g$变换状态，而撤销它的方法是再次执行该效应，这正是$\mathrm{pr}_1 \circ e$所做的。因此逆元复合到它所接收的累积器上，完全如$\mathrm{track}$所规定。
+
+我们现在可以证明$\mathrm{effect}$与$\mathrm{track}$类似的性质。
+
+\begin{theorem}\label{thm:3.13}
+$\mathrm{effect}$保持$\diamond$运算。即，$\forall f, g \in \mathfrak{E}_\Gamma$：
+\begin{equation}\label{eq:3.15}
+\mathrm{effect}_\Gamma(f) \diamond \mathrm{effect}_\Gamma(g) = \mathrm{effect}_\Gamma(f \diamond g)
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+取任意$(\gamma, \varphi) \in \partial\Gamma$，令$(\delta, s) = g(\gamma)$和$(\varepsilon, t) = f(\delta)$，使得$(f \diamond g)(\gamma) = (\varepsilon, s \circ t)$且$\mathrm{pr}_1 \circ (f \diamond g) = (\mathrm{pr}_1 \circ f) \circ (\mathrm{pr}_1 \circ g)$。则
+\begin{align*}
+&(\mathrm{effect}_\Gamma(f) \diamond \mathrm{effect}_\Gamma(g))(\gamma, \varphi) \\
+&= ((\varepsilon, \varphi \circ s \circ t), \mathrm{track}_\Gamma(s, \mathrm{pr}_1 \circ g) \circ \mathrm{track}_\Gamma(t, \mathrm{pr}_1 \circ f)) \\
+&= ((\varepsilon, \varphi \circ s \circ t), \mathrm{track}_\Gamma(s \circ t, (\mathrm{pr}_1 \circ f) \circ (\mathrm{pr}_1 \circ g))) \\
+&= \mathrm{effect}_\Gamma(f \diamond g)(\gamma, \varphi)
+\end{align*}
+其中第一步在$(\gamma, \varphi)$和$(\delta, \varphi \circ s)$处展开定义\ref{def:3.12}，第二步由定理\ref{thm:3.5}得到，第三步折叠定义\ref{def:3.12}。
+\end{proof}
+
+两个层次之间的关系如下图所示。其上三角是$e$的见证条件，根据定义\ref{def:3.8}，其下三角是$e'$是否像$e$一样被见证的问题。
+
+在层次之间，投射$\mathrm{pr}_1$将每个提升的映射与其所提升的映射相关联，正如定理\ref{thm:3.4}中对$\mathrm{track}_\Gamma$所做的那样。
+
+\begin{theorem}\label{thm:3.14}
+设$e \in \mathfrak{E}_\Gamma$，记$f \coloneqq \mathrm{pr}_1 \circ e$，并令$e' \coloneqq \mathrm{effect}_\Gamma(e)$，其前向映射为$f' \coloneqq \mathrm{pr}_1 \circ e'$。则
+\begin{enumerate}
+\item $\mathrm{pr}_1 \circ f' = f \circ \mathrm{pr}_1$；
+\item 对于每个$(\gamma, \varphi) \in \partial\Gamma$，提升逆元$g' \coloneqq \mathrm{pr}_2(e'(\gamma, \varphi))$和在该处见证的逆元$g \coloneqq \mathrm{pr}_2(e(\gamma))$满足$\mathrm{pr}_1 \circ g' = g \circ \mathrm{pr}_1$。
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+\begin{enumerate}
+\item 由定义\ref{def:3.12}，$f'(\gamma, \varphi) = (f(\gamma), \varphi \circ g)$，其状态为$f(\gamma) = (f \circ \mathrm{pr}_1)(\gamma, \varphi)$。
+\item 这是对$g' = \mathrm{track}_\Gamma(g, f)$应用定理\ref{thm:3.4}。
+\end{enumerate}
+\end{proof}
+
+下三角是否闭合可以通过计算提升逆元的返回值来确定：
+
+\begin{theorem}\label{thm:3.15}
+设$e \in \mathfrak{E}^*_\Gamma$并记$f \coloneqq \mathrm{pr}_1 \circ e$。固定$(\gamma, \varphi) \in \partial\Gamma$，令$(\delta, g) = e(\gamma)$，并记$(\Delta, g')$为$\mathrm{effect}_\Gamma(e)$在$(\gamma, \varphi)$处的值。则
+\begin{equation}\label{eq:3.16}
+g'(\Delta) = (\gamma, \varphi \circ g \circ f)
+\end{equation}
+\end{theorem}
+
+状态被精确恢复。累积器也被恢复，等价于$\mathrm{effect}_\Gamma(e) \in \mathfrak{E}^*_{\partial\Gamma}$，当且仅当$g \circ f = \mathrm{id}_\Gamma$；在任何情况下$(\varphi \circ g \circ f)(\gamma) = \varphi(\gamma)$，因此健康性不变式得以保持。
+
+\begin{proof}
+由定义\ref{def:3.12}，$\Delta = (\delta, \varphi \circ g)$且$g' = \mathrm{track}_\Gamma(g, f)$，所以
+\[
+g'(\Delta) = (g(\delta), \varphi \circ g \circ f) = (\gamma, \varphi \circ g \circ f)
+\]
+其中使用了$g(\delta) = \gamma$。属于$\mathfrak{E}^*_{\partial\Gamma}$要求在每个输入处等于$(\gamma, \varphi)$；取$\varphi = \mathrm{id}_\Gamma$将累积器的等式变为$g \circ f = \mathrm{id}_\Gamma$，而该条件反过来对每个$\varphi$给出累积器的等式。最后$(\varphi \circ g \circ f)(\gamma) = \varphi(g(\delta)) = \varphi(\gamma)$。
+\end{proof}
+
+因此下三角仅在$\gamma$处见证的逆元在每个状态逆转$f$时才闭合，因此$\mathrm{effect}_\Gamma$不将$\mathfrak{E}^*_\Gamma$带入$\mathfrak{E}^*_{\partial\Gamma}$。在任何情况下都成立的是在$\gamma$处的一致性：$\mathrm{recover}_\Gamma(g'(\Delta)) = \mathrm{recover}_\Gamma(\gamma, \varphi)$，这恰是定理\ref{thm:3.7}对累积器所假设的全部内容，因此逆转使恢复目标不受影响。
+
+以与施加相反的顺序逆转效应不需要额外条件，因为每个逆元随后遇到其自身施加产生的状态：
+
+\begin{theorem}\label{thm:3.16}
+设$e_1, \cdots, e_n \in \mathfrak{E}^*_\Gamma$从$(\gamma_0, \mathrm{id}_\Gamma)$依次施加，并以相反顺序逆转。则
+\begin{enumerate}
+\item 每次逆转恢复其施加时所面对的上下文状态；
+\item 每个中间状态满足健康性不变式。
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+每一步是一次施加或一次逆转。施加将$(\gamma, \varphi)$带到$(\delta, \varphi \circ g)$，其中$g(\delta) = \gamma$，因此由定理\ref{thm:3.7}保持$\varphi(\gamma)$，其假设正是$\mathfrak{E}^*_\Gamma$的见证。以相反顺序逆转时，每个逆元获得其自身施加产生的状态，因此由定理\ref{thm:3.15}，逆转精确恢复前一个状态并同样保持$\varphi(\gamma)$；两个结论都不依赖于逆元所接收的累积器。
+\end{proof}
+
+\subsubsection{效应的独立性}\label{subsubsec:3.1.3}
+
+在效应自身施加产生的状态处逆转效应是定理\ref{thm:3.16}所涵盖的；在其他任何状态处逆转效应是本小节所涵盖的。两种情形需要后者。逆元可能在后续效应仍然存在时运行，这等同于从运行中的系统撤出一个组件；一个序列可能交错多个组件的效应，每个组件保留自己的逆元，使得一个组件的逆元被另一个组件的施加所分隔。在两种情形中，逆元遇到的是外部效应所移动的状态，它是否仍然逆转其被构造来逆转的内容是一个交换性问题：需要交换的是每个效应可以执行的每个变换与另一个效应可以执行的每个变换，前向映射和产出的逆元同样。单个累积器不能解决任何一种情形，$\varphi$是一个以某种顺序一次性运行其持有的所有逆元的复合。
+
+\begin{definition}\label{def:3.17}
+对于效应函数$e \in \mathfrak{E}_\Gamma$，变换幺半群$\mathfrak{M}(e)$是$\Gamma \to \Gamma$中由$e$的前向映射和$e$产出的每个逆元生成的子幺半群，$\mathfrak{M}(e)$的生成元是该生成集的元素：
+\begin{equation}\label{eq:3.17}
+\mathfrak{M}(e) \coloneqq \langle \{\mathrm{pr}_1 \circ e\} \cup \{\mathrm{pr}_2(e(\gamma)) \mid \gamma \in \Gamma\} \rangle
+\end{equation}
+\end{definition}
+
+由对$(f, g) \in \mathfrak{T}_\Gamma$诱导的效应以$f$和$g$为其生成元，它在每个状态产出的逆元为$g$。
+
+\begin{lemma}\label{lem:3.18}
+交换性在生成元上确定，且$\diamond$不扩大任何变换幺半群。即，
+\begin{enumerate}
+\item 若$\mathfrak{M}(e_1)$的每个生成元与$\mathfrak{M}(e_2)$的每个生成元交换，则$\mathfrak{M}(e_1)$的每个元素与$\mathfrak{M}(e_2)$的每个元素交换；
+\item $\mathfrak{M}(e_1 \diamond e_2) \subseteq \langle \mathfrak{M}(e_1) \cup \mathfrak{M}(e_2) \rangle$。
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}
+\begin{enumerate}
+\item 与$\mathfrak{M}(e_2)$的每个生成元交换的映射构成$\Gamma \to \Gamma$的子幺半群，因为$\mathrm{id}_\Gamma$属于它，且若$f$和$f'$属于它则$f \circ f'$也属于它。该子幺半群由假设包含$\mathfrak{M}(e_1)$的生成元，因此包含$\mathfrak{M}(e_1)$。固定$f \in \mathfrak{M}(e_1)$，与$f$交换的映射同样构成包含$\mathfrak{M}(e_2)$的生成元并因此包含$\mathfrak{M}(e_2)$的子幺半群。
+\item 由定义\ref{def:3.9}，$e_1 \diamond e_2$的前向映射是$(\mathrm{pr}_1 \circ e_1) \circ (\mathrm{pr}_1 \circ e_2)$，它在任何状态产出的逆元是$e_2$产出的某个$s$和$e_1$产出的某个$t$的复合$s \circ t$。因此$\mathfrak{M}(e_1 \diamond e_2)$的每个生成元是两者生成元的复合。
+\end{enumerate}
+\end{proof}
+
+\begin{definition}\label{def:3.19}
+效应函数$e_1, e_2 \in \mathfrak{E}_\Gamma$是独立的，当下述条件成立：
+\begin{enumerate}
+\item 一个的每个变换与另一个的每个变换交换，
+\begin{equation}\label{eq:3.18}
+\forall f \in \mathfrak{M}(e_1), g \in \mathfrak{M}(e_2).\; f \circ g = g \circ f
+\end{equation}
+\item 一个的变换不干扰另一个产出的逆元，
+\begin{equation}\label{eq:3.19}
+\forall g \in \mathfrak{M}(e_2), \gamma \in \Gamma.\; \mathrm{pr}_2(e_1(g(\gamma))) = \mathrm{pr}_2(e_1(\gamma))
+\end{equation}
+\end{enumerate}
+对$e_1$和$e_2$交换亦同。
+\end{definition}
+
+族$(e_l)_{l \in L}$是两两独立的，当对每个$l \neq l'$，$e_l$和$e_{l'}$独立。族可以重复效应函数，而使一个效应函数与自身独立即是使$\mathfrak{M}(e)$交换。
+
+对于由对$(f_1, g_1)$和$(f_2, g_2)$诱导的效应，条款(1)由引理\ref{lem:3.18}(1)即四对$f_1, f_2$；$g_1, g_2$；$f_1, g_2$；和$g_1, f_2$的交换，条款(2)直接成立，因为诱导效应在每个状态产出同一个逆元。$\diamond$下的交换是不同的性质。$e_1 \diamond e_2 = e_2 \diamond e_1$所等同的是两种顺序的复合前向映射彼此之间和两种顺序的复合逆元彼此之间，每个逆元在其自身施加产生的状态处进入复合；独立性则将一个效应的每个变换与另一个效应的每个变换相关联，包括前向映射与外部逆元的配对。
+
+在独立性下，逆元可以在后续效应已移动的状态处运行，它在那里撤回的只是自身的贡献而非其他：
+
+\begin{theorem}\label{thm:3.20}
+设$e_1, \cdots, e_n \in \mathfrak{E}^*_\Gamma$两两独立并从$\gamma_0$依次施加。记$f_i \coloneqq \mathrm{pr}_1 \circ e_i$，令$\delta_i \coloneqq f_i(\delta_{i-1})$且$\delta_0 \coloneqq \gamma_0$，并令$g_i \coloneqq \mathrm{pr}_2(e_i(\delta_{i-1}))$为$e_i$在施加处产出的逆元。固定$j$并记$\delta'_i \coloneqq (f_i \circ \cdots \circ f_{j+1})(\delta_{j-1})$为省略$e_j$的序列的状态，使得$\delta'_j = \delta_{j-1}$。则对于每个满足$j \leqslant u \leqslant n$的$u$，
+\begin{enumerate}
+\item $\delta_u = f_j(\delta'_u)$且$g_j(\delta_u) = \delta'_u$；
+\item 每个满足$i > j$的$e_i$在$\delta'_{i-1}$处产出与在$\delta_{i-1}$处相同的逆元$g_i$。
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+\begin{enumerate}
+\item 第一个等式是对$u$的归纳。在$u = j$处它读作$\delta_j = f_j(\delta_{j-1})$，这正是$\delta_j$的定义。对于归纳步，$\delta_{u+1} = f_{u+1}(\delta_u) = f_{u+1}(f_j(\delta'_u)) = f_j(f_{u+1}(\delta'_u)) = f_j(\delta'_{u+1})$，中间等式是定义\ref{def:3.19}对$e_{u+1}$和$e_j$的条款(1)，由于$u+1 > j$，它们是族中不同的效应。对于第二个等式，条款(1)将$g_j$穿过$e_j$之后施加的前向映射，使$e_j$的见证用于它所保持的唯一状态：
+\[
+g_j(\delta_u) = (g_j \circ f_u \circ \cdots \circ f_{j+1})(\delta_j) = (f_u \circ \cdots \circ f_{j+1})(g_j(f_j(\delta_{j-1}))) = \delta'_u
+\]
+最后等式依赖于$g_j(f_j(\delta_{j-1})) = \delta_{j-1}$，即定义\ref{def:3.8}要求$e_j$在$\delta_{j-1}$处的见证。
+\item 由(1)，状态$\delta_{i-1}$是$f_j(\delta'_{i-1})$，而$f_j \in \mathfrak{M}(e_j)$，所以定义\ref{def:3.19}对$e_i$和$e_j$的条款(2)给出$\mathrm{pr}_2(e_i(f_j(\delta'_{i-1}))) = \mathrm{pr}_2(e_i(\delta'_{i-1}))$。
+\end{enumerate}
+\end{proof}
+
+条款(1)定位了逆元到达的状态：它是同一序列在从未施加该效应时将到达的状态，无论之后施加了什么效应。条款(2)定位了其他逆元在那里保持的内容，两者结合使定理可以再次应用于更短的序列：
+
+\begin{corollary}\label{cor:3.21}
+设$e_1, \cdots, e_n \in \mathfrak{E}^*_\Gamma$两两独立并从$\gamma_0$依次施加，并令$g_1, \cdots, g_n$如上。以$\{1, \cdots, n\}$的任意排列的顺序在$\delta_n$处施加$n$个逆元可到达$\gamma_0$。
+\end{corollary}
+
+\begin{proof}
+对$n$向下归纳。设排列以$j$开始。由定理\ref{thm:3.20}(1)，在$\delta_n$处施加$g_j$到达$\delta'_n$，即省略$e_j$的序列到达的状态；由定理\ref{thm:3.20}(2)，剩余效应在那里产出的逆元即手中的$g_i$。该序列作为子族是两两独立的，因此归纳假设适用于它及排列的其余部分；空序列到达$\gamma_0$。
+\end{proof}
+
+后进先出(LIFO)顺序是这样一个排列，而定理\ref{thm:3.16}在无任何假设下以该顺序逆转。独立性所带来的是所有其他顺序，以及与之一起的交错多个组件的序列，第\S\ref{sec:4.4.2}将其推至整个系统的轨迹。
+
+这些构造共同构成可逆效应：$\mathfrak{E}^*_\Gamma$中的每个效应函数显式提供其自身的逆元，$\mathrm{effect}$在效应上下文$\partial\Gamma$上追踪这些逆元，$\diamond$运算在保持可逆性的同时组合它们。它们所提供的是局部的时间可组合性，局部在于保证是关于一个组件自身效应的。我们将其视为以下准则：对于组件施加的每个效应函数序列，累积器恢复其开始时的上下文（定理\ref{thm:3.7}），逆转序列将每个逆元交与其自身施加时所面对的状态（定理\ref{thm:3.16}）。加载组件是施加这样的序列并将其逆元累积到$\varphi$中；卸载组件是施加$\varphi$。
+
+准则遗漏了两件事，两者都在多个组件参与时出现：以累积器所强加顺序之外的顺序逆转，以及交错其他效应的序列。独立性提供了它们（推论\ref{cor:3.21}），它是效应上的条件而非构造的性质，\S\ref{subsubsec:3.3.2}是满足它的规则被确定之处，\S\ref{sec:4.4.2}是保证被读自整个系统轨迹之处。在独立性失效之处，顺序必须在别处承载：在组件内部由累积器承载，它以LIFO顺序逆转任何效应（\S\ref{sec:4.3.2}）；在组件之间由声明的协效应承载，它将一个激活排列于另一个之前（\S\ref{sec:4.3.1}）。
+
+\subsection{响应式协效应}\label{subsec:3.2}
+
+空间可组合性是组件声明对彼此的依赖、系统在运行时解析、提供和撤回这些依赖的能力。这要求每当共享上下文变化时重新评估依赖满足，使得组件在其依赖变得可用时激活、在它们被撤回时停用。因此，我们将组件的依赖建模为规约，并将上下文的每次变化根据该规约分类为激活、停用或中性的。根据规约分类是检测满足变化的方式；响应该分类是驱动激活和停用的方式。我们称此类协效应为响应式的：通过分类上下文变化并从中驱动激活和停用，正确的协效应排序成为结构性保证。
+
+\subsubsection{协效应上下文}\label{subsubsec:3.2.1}
+
+传统的控制反转(IoC)容器\cite{ref38}通常将依赖建模为简单的键值映射。本节将IoC形式化为与可逆效应协同的协效应上下文，为动态组合提供数学基础。
+
+\begin{definition}\label{def:3.22}
+给定类型族$\mathcal{V}: K \to \mathrm{Type}$，定义协效应上下文为依存偏函数类型：
+\begin{equation}\label{eq:3.20}
+\Sigma \coloneqq (k: K) \rightharpoonup \mathcal{V}_k
+\end{equation}
+\end{definition}
+
+其中$\sigma: \Sigma$是一个有限偏函数，为每个$k \in \mathrm{dom}(\sigma) \subseteq K$赋予$\mathcal{V}_k$类型的值。我们记：
+\begin{itemize}
+\item $\sigma(k)$为应用（在$k \in \mathrm{dom}(\sigma)$时有定义）；
+\item $\sigma[k \mapsto v]$为在$k$处绑定$v$、在其他处与$\sigma$一致的表；
+\item $\sigma \setminus k$为限制（在$k \in \mathrm{dom}(\sigma)$时有定义）；
+\item $k \in \mathrm{dom}(\sigma)$为隶属关系。
+\end{itemize}
+
+类型族$\mathcal{V}$的使用确保每个依赖键$k$关联于特定的值类型$\mathcal{V}_k$，为依赖访问提供静态类型安全。扩展和限制带有前置条件，由以下运算施加：依赖不能被提供两次（扩展的$k \notin \mathrm{dom}(\sigma)$）也不能在缺失时撤回（限制的$k \in \mathrm{dom}(\sigma)$）。违反前置条件被报告为错误且不产生转移，因此描述确实发生的转移的效应代数可不经修改地适用于这些运算。倾向于内化失败的读者可将以下每个$\Sigma \rightharpoonup \Sigma$读作$\Sigma \to \mathsf{Maybe}(\Sigma)$并在$\mathsf{Maybe}$幺半群中复合（\S\ref{sec:2}），代价是将每个恒等替换为运算定义域上的偏恒等。基于该上下文结构，我们定义两个核心运算：
+
+\begin{definition}\label{def:3.23}
+$\Sigma$上的$\mathrm{get}$和$\mathrm{set}$运算定义为：
+\begin{equation}\label{eq:3.21}
+\mathrm{get} : (k: K) \to \Sigma \rightharpoonup \mathcal{V}_k
+\end{equation}
+\[
+\mathrm{get} = k \mapsto \sigma \mapsto \sigma(k)
+\]
+\[
+\mathrm{set} : (k: K) \times \mathcal{V}_k \to \Sigma \rightharpoonup \Sigma \times (\Sigma \rightharpoonup \Sigma)
+\]
+\[
+\mathrm{set} = (k, v) \mapsto \sigma \mapsto (\sigma[k \mapsto v], \lambda\sigma'.\sigma' \setminus k)
+\]
+\end{definition}
+
+其中$\mathrm{get}(k)$要求$k \in \mathrm{dom}(\sigma)$，$\mathrm{set}(k, v)$要求$k \notin \mathrm{dom}(\sigma)$作为前置条件。
+
+值得注意的是，$\mathrm{set}(k, v)$具有类型$\mathfrak{E}^*_\Sigma$，正是协效应上下文上的效应函数。因此我们可以直接应用\S\ref{subsec:3.1}的效应机制：$\mathrm{effect}_\Sigma$提供依赖注册的自动追踪和恢复。这是响应式协效应与可逆效应之间的协同：协效应运算是效应，而效应是可逆的。
+
+$\mathrm{get}$交给组件的是一个值，而组件可以用该值做的是该键处协效应所提供的。因此键承载的不仅是值类型：
+
+\begin{definition}\label{def:3.24}
+键$k$处的协效应是三元组$(\mathcal{V}_k, \simeq_k, \mathcal{A}_k)$，其中$\mathcal{V}_k$是定义\ref{def:3.22}的值类型，$\simeq_k$是$\mathcal{V}_k$上的等价关系，$k$处的值在此关系下被比较（\S\ref{subsubsec:3.3.2}），$\mathcal{A}_k$是协效应运算集合，即绑定在$k$处的值向持有它的组件提供的运算。
+\end{definition}
+
+运算$a \in \mathcal{A}_k$携带参数类型$X_a$和结果类型$B_a$，仅作用于值：
+\begin{equation}\label{eq:3.22}
+a: X_a \to \mathcal{V}_k \rightharpoonup \mathcal{V}_k \times (\mathcal{V}_k \rightharpoonup \mathcal{V}_k) \times B_a
+\end{equation}
+
+其前两个成分构成$\mathcal{V}_k$上的效应函数，如定义\ref{def:3.8}所见证，第三个是结果。每个运算被要求尊重$\simeq_k$：在$\simeq_k$相关的值处它同时有定义或同时无定义，在有定义处产出$\simeq_k$相关的后继、再次将$\simeq_k$相关值带到$\simeq_k$相关值的逆元、以及相等的结果。运算通过其提升作用于协效应上下文
+\begin{equation}\label{eq:3.23}
+a_\Sigma(x)(\sigma) \coloneqq \mathbf{let}\;(v, g, b) = a(x)(\sigma(k))\;\mathbf{in}\;(\sigma[k \mapsto v], \lambda\sigma'.\sigma'[k \mapsto g(\sigma'(k))], b)
+\end{equation}
+在$k \in \mathrm{dom}(\sigma)$时有定义，其前两个成分是$\Sigma$上的效应函数。
+
+将$k$的运算类型化为作用于$\mathcal{V}_k$正是将其限制于$k$处的绑定：提升读写该绑定并使其他键保持不变，因此不需要额外的副作用条件来说明这一点。在隔离生效之处，提升所到达的绑定是域解析到的那个（定义\ref{def:3.28}），共享域的两个键共享一个绑定。行为依赖于另一个键的运算将那个键的值读入其参数$X_a$，而下一小节的响应式规则正是使该值在读取它的组件运行期间保持不变的条件（定理\ref{thm:4.3}）。
+
+\subsubsection{规约与通知}\label{subsubsec:3.2.2}
+
+前面的定义描述了单个依赖如何被注册和访问。然而，访问缺失的依赖是运行时失败。因此组件应仅在其声明的所有依赖都存在时才激活，而非乐观地访问它们并在缺失时失败。这引出两个问题：组件声明的依赖是否联合满足，以及系统应如何响应该状态的变化。协效应上下文$\Sigma$携带使两个问题都可处理的自然观测结构：对于任何协效应规约$d \subseteq K$，定义满足谓词：
+\begin{equation}\label{eq:3.24}
+\sigma \models d \coloneqq \forall k \in d.\; k \in \mathrm{dom}(\sigma)
+\end{equation}
+
+该谓词是可判定的（因为$\mathrm{dom}(\sigma)$是有限的）。由于$\sigma$的所有变更通过效应函数（其逆元恢复之前的定义域），满足的变化在每个效应边界处可被检测。这是响应性的代数基础：效应系统保证每个协效应变化都被观测到。
+
+\begin{definition}\label{def:3.25}
+协效应规约为：
+\begin{equation}\label{eq:3.25}
+\mathfrak{D}_\Sigma \coloneqq \mathsf{Set}(K)
+\end{equation}
+\end{definition}
+
+表示组件从环境声明的依赖集合。
+
+使该规约具有响应性的是它分类状态转移的方式。任何将$\sigma$变换为$\sigma'$的效应可以根据规约$d \in \mathfrak{D}_\Sigma$分类，依据$d$的满足状态是否改变：
+
+\begin{definition}\label{def:3.26}
+给定协效应规约$d \subseteq K$和状态$\sigma, \sigma' \in \Sigma$，定义：
+\begin{equation}\label{eq:3.26}
+\mathrm{notify}_d(\sigma, \sigma') \coloneqq
+\begin{cases}
+\mbox{激活} & \mbox{若}\;\sigma \not\models d \wedge \sigma' \models d \\
+\mbox{停用} & \mbox{若}\;\sigma \models d \wedge \sigma' \not\models d \\
+\mbox{中性} & \mbox{其他}
+\end{cases}
+\end{equation}
+\end{definition}
+
+这是良定义的，因为$\sigma \models d$是可判定的且所有状态转移由效应函数中介。响应式不变式为：激活转移触发组件效应的执行（带有完全的效应追踪），而停用转移触发通过施加累积器的恢复。这些转移的精确操作语义取决于它们与控制流的交互，在第\S\ref{sec:4}中展开。
+
+$\mathrm{set}$和$\mathrm{notify}$共同提供的是局部空间可组合性，局部与之前的意义相同，保证是关于一个组件自身协效应的。我们将其视为以下准则：组件仅在满足其规约的状态处激活，因此它从不读取缺失的绑定；上下文的每次变化都根据该规约分类，因此满足的丧失在发生处被检测并驱动停用。两半都由上述定义直接得到，满足是组件将激活处检查的前置条件，$\mathrm{notify}_d$在每个转移处有定义。
+
+准则覆盖了协效应排序的一个方向而非另一个。如果组件$A$提供键$k$且组件$B$声明$k \in d_B$，则$B$只能在$A$已激活并提供$k$之后才能激活，因为$\sigma \models d_B$要求$k \in \mathrm{dom}(\sigma)$。反之不成立：卸载$A$从$\mathrm{dom}(\sigma)$中移除$k$从而破坏$B$的满足，但通知本身不能在$B$自身的拆卸需要$k$期间保持$k$可读，也不能将$A$的恢复推迟到$B$完成之后。将撤回排列在它引起的停用之后是对其他组件而非对行动组件的条件，因此它属于保证的全局形式，\S\ref{sec:4.3.1}提供了它所需的机制。
+
+\subsubsection{隔离与拦截}\label{subsubsec:3.2.3}
+
+基本协效应上下文$\Sigma$建模平坦的依赖表。然而在实践中，系统可能需要为不同组件将不同的值绑定到同一逻辑依赖。本节用两种机制扩展协效应上下文：协效应隔离（同一键在不同上下文中解析不同）和协效应拦截（依赖访问上的横切行为）。
+
+\textbf{实现。}两种机制与$\mathrm{get}$和$\mathrm{set}$的不同在于它们作用的对象。提供写入每个组件读取的共享表，因此它是该表上的效应并携带逆元以撤回它。隔离和拦截则调整键对某一上下文下的组件的解析方式，使表本身保持不变。将运算类型化为效应固定了其指称——后继状态配以逆元——但不固定其实现，后者决定逆元如何被执行。
+
+\begin{definition}\label{def:3.27}
+上下文上的效应函数允许两种实现：
+\begin{itemize}
+\item 原地实现变更上下文并返回非平凡逆元；后继是输入的别名，恢复运行逆元以撤销变更。
+\item 派生实现保持输入不变并返回从输入派生的新鲜上下文，以恒等函数作为逆元；恢复丢弃派生上下文。从另一个派生的上下文正是定义\ref{def:3.32}的递归结构所承载的。
+\end{itemize}
+\end{definition}
+
+在纯函数式设定下两者一致，命令式宿主可以按运算选择其中之一；\S\ref{sec:5.1.2}实现了两者。隔离和拦截直接采用派生实现：每个产生一个新鲜上下文，其自身的表与继承的表不同，因此每个在下面被类型化为从上下文到上下文的映射而非效应函数。共享表中没有任何变化，因此没有逆元需要追踪，也没有定义\ref{def:3.12}要提升的内容，恢复将派生上下文连同其承载的调整一起丢弃。派生表上的赋值覆盖继承表在该键处持有的任何内容，这就是为什么两种运算都不带前置条件。
+
+\textbf{协效应隔离。}通过引入隔离域，协效应隔离允许同一依赖在不同上下文中绑定到不同的值。这在多租户系统、测试环境和组件沙箱中有广泛应用。
+
+\begin{definition}\label{def:3.28}
+定义带隔离的协效应上下文为：
+\begin{equation}\label{eq:3.27}
+\Sigma_{\mathrm{iso}} \coloneqq (K \rightharpoonup R) \times ((r: R) \rightharpoonup \mathcal{V}_r)
+\end{equation}
+\end{definition}
+
+它可以表示为对$(\rho, \sigma)$，其中：
+\begin{itemize}
+\item $\rho: K \rightharpoonup R$是隔离域表，为每个隔离键赋予域标识符；$\mathrm{dom}(\rho)$之外的键解析到其自身的域，因此我们在那里记$\rho(k) = k$（$R \supseteq K$）；
+\item $\sigma: (r: R) \rightharpoonup \mathcal{V}_r$是依赖表，从域标识符到类型化值的偏依存函数。
+\end{itemize}
+
+双层映射结构将逻辑层与存储层解耦，使依赖访问具有上下文感知。当访问键$k$时，系统首先解析$\rho(k)$得到域标识符$r$，然后访问$\sigma(r)$获取实际值。
+
+\begin{definition}\label{def:3.29}
+$\Sigma_{\mathrm{iso}}$上的$\mathrm{get}$、$\mathrm{set}$和$\mathrm{isolate}$运算为：
+\begin{equation}\label{eq:3.28}
+\mathrm{get} : (k: K) \to \Sigma_{\mathrm{iso}} \rightharpoonup \mathcal{V}_{\rho(k)}
+\end{equation}
+\[
+\mathrm{get} = k \mapsto (\rho, \sigma) \mapsto \sigma(\rho(k))
+\]
+\[
+\mathrm{set} : (k: K) \times \mathcal{V}_{\rho(k)} \to \Sigma_{\mathrm{iso}} \rightharpoonup \Sigma_{\mathrm{iso}} \times (\Sigma_{\mathrm{iso}} \rightharpoonup \Sigma_{\mathrm{iso}})
+\]
+\[
+\mathrm{set} = (k, v) \mapsto (\rho, \sigma) \mapsto ((\rho, \sigma[\rho(k) \mapsto v]), \lambda(\rho', \sigma').(\rho', \sigma' \setminus \rho'(k)))
+\]
+\[
+\mathrm{isolate} : K \times R \to \Sigma_{\mathrm{iso}} \to \Sigma_{\mathrm{iso}}
+\]
+\[
+\mathrm{isolate} = (k, r) \mapsto (\rho, \sigma) \mapsto (\rho[k \mapsto r], \sigma)
+\]
+\end{definition}
+
+其中$\mathrm{get}$和$\mathrm{set}$带有沿$\rho$迁移的定义\ref{def:3.23}的前置条件，即$\rho(k) \in \mathrm{dom}(\sigma)$和$\rho(k) \notin \mathrm{dom}(\sigma)$。$\mathrm{isolate}(k, r)$派生的上下文将域$r$赋予$k$并原样继承依赖表，因此已被隔离的键被重新赋值而非被拒绝。
+
+协效应隔离机制本质上实现了运行时临时多态系统。通过隔离域标识符，同一依赖键可以在不同上下文中解析到完全不同的值，这种多态可以在运行时动态调整。与传统的依赖注入相比，协效应隔离提供更细粒度的控制，使特定组件的自定义隔离成为可能；$\mathrm{set}$仍是效应函数（$\mathfrak{E}^*_{\Sigma_{\mathrm{iso}}}$）从而继承可逆性，而$\mathrm{isolate}$不需要可逆性，因为它派生上下文而非写入共享表。
+
+\textbf{协效应拦截。}第二种机制，协效应拦截，将横切元数据附加到依赖访问上，在不修改依赖值的情况下添加行为。该元数据可以是上下文承载的或组件声明的，因此我们扩展协效应上下文和协效应规约：
+
+\begin{definition}\label{def:3.30}
+定义带拦截的协效应上下文和规约为：
+\begin{equation}\label{eq:3.29}
+\Sigma_{\mathrm{inter}} \coloneqq ((k: K) \to \mathcal{M}_k) \times ((k: K) \rightharpoonup (\mathcal{M}_k \to \mathcal{V}_k))
+\end{equation}
+\[
+\mathfrak{D}_{\mathrm{inter}} \coloneqq (k: K) \rightharpoonup \mathcal{M}_k
+\]
+\end{definition}
+
+上下文$\Sigma_{\mathrm{inter}}$是对$(\iota, \sigma)$：$\iota$是安装在上下文本身的上下文承载元数据，默认为空（$\epsilon_k$）；$\sigma$将每个键$k$映射到从元数据$\mathcal{M}_k$到值$\mathcal{V}_k$的提供者函数。规约$d \in \mathfrak{D}_{\mathrm{inter}}$携带组件声明的元数据，为每个键赋予其元数据$d(k)$，$\mathrm{dom}(d)$充当依赖集。每个键为其元数据配备幺半群$(\mathcal{M}_k, \oplus_k, \epsilon_k)$：合并$\oplus_k$是结合的，以$\epsilon_k$（空元数据）为单位元。
+
+\begin{definition}\label{def:3.31}
+$\Sigma_{\mathrm{inter}}$上的$\mathrm{get}$、$\mathrm{set}$和$\mathrm{intercept}$运算为：
+\begin{equation}\label{eq:3.30}
+\mathrm{get} : (k: K) \times \mathcal{M}_k \to \Sigma_{\mathrm{inter}} \rightharpoonup \mathcal{V}_k
+\end{equation}
+\[
+\mathrm{get} = (k, \mu) \mapsto (\iota, \sigma) \mapsto \sigma(k)(\mu \oplus_k \iota(k))
+\]
+\[
+\mathrm{set} : (k: K) \times (\mathcal{M}_k \to \mathcal{V}_k) \to \Sigma_{\mathrm{inter}} \rightharpoonup \Sigma_{\mathrm{inter}} \times (\Sigma_{\mathrm{inter}} \rightharpoonup \Sigma_{\mathrm{inter}})
+\]
+\[
+\mathrm{set} = (k, \psi) \mapsto (\iota, \sigma) \mapsto ((\iota, \sigma[k \mapsto \psi]), \lambda(\iota', \sigma').(\iota', \sigma' \setminus k))
+\]
+\[
+\mathrm{intercept} : (k: K) \times \mathcal{M}_k \to \Sigma_{\mathrm{inter}} \to \Sigma_{\mathrm{inter}}
+\]
+\[
+\mathrm{intercept} = (k, \nu) \mapsto (\iota, \sigma) \mapsto (\iota[k \mapsto \iota(k) \oplus_k \nu], \sigma)
+\]
+\end{definition}
+
+其中$\mathrm{get}$和$\mathrm{set}$带有定义\ref{def:3.23}在提供者表上的前置条件，即$k \in \mathrm{dom}(\sigma)$和$k \notin \mathrm{dom}(\sigma)$。$\mathrm{intercept}(k, \nu)$派生的上下文将$\nu$合并到$k$处继承的元数据上并原样继承提供者表。
+
+当具有规约$d$的组件访问键$k$时，系统求值$\sigma(k)(d(k) \oplus_k \iota(k))$：组件声明的元数据与上下文承载的元数据$\iota$合并，提供者函数被应用于结果。该合并遵循每个键自身的语义（例如标量字段被覆盖，集合值字段取并集）且右偏，因此$\iota(k)$具有优先权并可以覆盖组件的声明，使外层上下文可以在不修改组件的情况下约束组件使用协效应的方式（例如\S\ref{sec:6.3}）。
+
+\subsection{上下文范式}\label{subsec:3.3}
+
+\S\ref{subsec:3.1}和\S\ref{subsec:3.2}各自作用于一个上下文，前者作为效应的载体，后者作为协效应的载体，留下了一个承载两者的单一上下文是什么样的开放问题。本节给出该统一的具体构造，从协效应中组装出为\S\ref{subsubsec:3.1.3}留下开放问题的效应独立性提供支撑的观测等价，并论证所得上下文类型本身构成一种编程范式。
+
+\subsubsection{统一上下文}\label{subsubsec:3.3.1}
+
+对于上下文$\Gamma$，效应上下文$\partial\Gamma$（\S\ref{subsec:3.1}）提供更高层的抽象，承载前一层的上下文和该层的累积器（定义\ref{def:3.2}）。使该结构递归并与协效应上下文$\Sigma$结合，得到以下类型：
+
+\begin{definition}\label{def:3.32}
+上下文类型$\Gamma_\infty$定义为：
+\begin{equation}\label{eq:3.31}
+\Gamma_\infty \coloneqq \mu\Gamma.\; \Gamma \times (\Gamma \to \Gamma) \times \Sigma
+\end{equation}
+\end{definition}
+
+其中三个投射为：
+\begin{itemize}
+\item $\Gamma$：当前上下文状态（递归的）；
+\item $\Gamma \to \Gamma$：累积器，恢复该层的效应；
+\item $\Sigma$：承载依赖信息的协效应上下文。
+\end{itemize}
+
+在该定义下，$\mathrm{effect}$将$\mathfrak{E}_{\Gamma_\infty}$映射到自身，将$\partial$-塔统一为单一自相似类型。协效应上下文$\Sigma$被结构性整合：依赖运算（$\mathrm{set}$、$\mathrm{get}$）作用于$\Sigma$，累积器追踪其逆转。由于$\Sigma$底层的类型族$\mathcal{V}$不受约束，系统需要跨组件共享的任何状态都可以编码为具有适当值类型的依赖——$\Sigma$涵盖了所有共享可变状态，而不仅是组件间依赖。组件与其环境之间的每次交互都通过这一单一实体。
+
+\textbf{层次化组合。}$\Gamma_\infty$的递归结构支持层次化控制：父上下文聚合多个子层效应，形成树状控制结构，在实现统一跨层管理的同时保持模块性。效应变换实现了字面意义上的"即插即用"隐喻：
+\begin{itemize}
+\item 加载组件对应于执行其效应（插入）；
+\item 卸载组件对应于恢复其效应（拔出，不影响其他运行中的组件）；
+\item 层次结构中不同层级的组件独立可加载和可卸载；父上下文聚合和管理所有子组件的效应，实现任意嵌套组合。
+\end{itemize}
+
+\subsubsection{观测等价}\label{subsubsec:3.3.2}
+
+\S\ref{subsec:3.1}的恢复保证断言状态的相等（定理\ref{thm:3.7}），这是一种理想化，因为物理状态无法恢复到其原来的样子。例如，$\mathrm{free}$将内存块归还给分配器而不恢复$\mathrm{malloc}$之前堆的布局；生成性名称也不被丢弃它的逆元恢复，因为下一次创建会抽取一个新的\cite{ref39}。因此\S\ref{sec:3}中的等式应被读到等价$\simeq$之上，而我们将$\simeq$取为观测等价：两个状态在没有任何观测者能区分它们时相关。比较行为而非表示是程序等价的既有路径\cite{ref40}，而这样的比较所产生的关系取决于观测者被给予什么来工作\cite{ref41}。上下文的观测者被给予的是它承载的协效应，每个协效应自带其等价关系（定义\ref{def:3.24}），因此上下文上的关系从它们组装而来。组装它正是本小节的工作，而用它商化正是为\S\ref{subsubsec:3.1.3}所要求的独立性买单的方式。
+
+\begin{definition}\label{def:3.33}
+两个协效应上下文在绑定相同键到相关值时相关，两个上下文状态在其协效应投射相关时相关：
+\begin{equation}\label{eq:3.32}
+\sigma \simeq \sigma' \coloneqq \mathrm{dom}(\sigma) = \mathrm{dom}(\sigma') \wedge \forall k \in \mathrm{dom}(\sigma).\; \sigma(k) \simeq_k \sigma'(k)
+\end{equation}
+\[
+\gamma \simeq \gamma' \coloneqq \sigma_\gamma \simeq \sigma_{\gamma'}
+\]
+\end{definition}
+
+其中$\sigma_\gamma$记$\gamma$的协效应投射（定义\ref{def:3.32}）。
+
+状态中没有任何键绑定的部分由此被遗忘，而遗忘它正是使定理\ref{thm:3.7}能读到$\simeq$之上的原因：上述例子中的堆布局和生成性名称位于关系之外，除非某个键绑定它们。\S\ref{subsubsec:3.2.2}对$\simeq$的需求是推演得出的而非假设的。相关状态具有相同的定义域，因此它们在满足谓词$\sigma \models d$和定义\ref{def:3.26}的分类$\mathrm{notify}_d$上一致，响应性是$\Sigma / \simeq$的性质。
+
+称该关系为观测的是关于每个$\simeq_k$的一个主张，即它不分离$k$的运算所能区分的任何东西。值的观测者运行这些运算并读取其结果。
+
+\begin{definition}\label{def:3.34}
+设$V$承载定义\ref{def:3.24}意义上的运算集合$\mathcal{A}$，记$\mathfrak{M}(a)$为效应函数$a(x)$在每个参数$x: X_a$上的变换幺半群（定义\ref{def:3.17}）。$\mathcal{A}$上的测试是幺半群$\mathfrak{M}(a)$（$a \in \mathcal{A}$）的生成元上的有限字，每个字母施加于之前字母留下的值；其结果是运算的前向映射的字母沿途产出的，且在前置条件失败处无定义。值$v, v': V$是不可区分的，记为$v \approx_{\mathcal{A}} v'$，当$\mathcal{A}$上的每个测试在两者都有定义或都无定义且在两者处产出相同结果时。
+\end{definition}
+
+\begin{lemma}\label{lem:3.35}
+不可区分性是运算所尊重的最粗关系。即，
+\begin{enumerate}
+\item $\mathcal{A}$的每个运算尊重$\approx_{\mathcal{A}}$（定义\ref{def:3.24}的意义上）；
+\item $\mathcal{A}$的每个运算都尊重的每个等价包含于$\approx_{\mathcal{A}}$。
+\end{enumerate}
+
+因此$\simeq_k$的每个容许选择包含于$\approx_{\mathcal{A}_k}$，而$\approx_{\mathcal{A}_k}$本身也是容许的。
+\end{lemma}
+
+\begin{proof}
+\begin{enumerate}
+\item 设$v \approx_{\mathcal{A}} v'$并令$a \in \mathcal{A}$被施加于某参数。将一个字母前缀于测试仍是测试，因此前向映射到达的值是不可区分的，任何从不可区分参数出发的产出逆元到达的值同样如此；单字母测试给出两者都有定义或都无定义以及结果的相等。
+\item 设$R$是这样的等价且$vRv'$。测试的每个字母是运算的前向映射或产出的逆元，尊重将$R$沿任一方向传递，使到达的值保持相关且每个字母处结果相等。因此每个测试在$v$和$v'$处一致。
+\end{enumerate}
+\end{proof}
+
+在整个过程中将$=$替换为$\simeq$本身并不足够，因为效应函数返回逆元和状态，而$\simeq$所等同的两个状态必须也产出$\simeq$所等同的逆元。
+
+\begin{definition}\label{def:3.36}
+映射$f: \Gamma \to \Gamma$尊重$\simeq$当下述成立：
+\begin{equation}\label{eq:3.33}
+\forall \gamma, \gamma' \in \Gamma.\; \gamma \simeq \gamma' \Rightarrow f(\gamma) \simeq f(\gamma')
+\end{equation}
+\end{definition}
+
+两个映射在每个状态一致时相关，$\partial\Gamma$中的两个对在两个成分都相关时相关：
+\begin{equation}\label{eq:3.34}
+f \simeq g \coloneqq \forall \gamma \in \Gamma.\; f(\gamma) \simeq g(\gamma)
+\end{equation}
+\[
+(\delta, g) \simeq (\delta', g') \coloneqq \delta \simeq \delta' \wedge g \simeq g'
+\]
+
+尊重$\simeq$的映射是下降到$\Gamma / \simeq$的映射，由$\simeq$相关的两个映射是下降到那里同一映射的两个映射。效应函数需要两者：前者使其计算的状态在商上确定，后者使其返回的逆元在商上确定。
+
+\begin{definition}\label{def:3.37}
+将定义\ref{def:3.8}读到$\simeq$之上：$e \in \mathfrak{E}_\Gamma$属于$\mathfrak{E}^*_\Gamma$当$e$作为映射$\Gamma \to \partial\Gamma$尊重$\simeq$，且对于每个$\gamma \in \Gamma$，记$(\delta, g) = e(\gamma)$，
+\begin{enumerate}
+\item $g(\delta) \simeq \gamma$；
+\item $g$尊重$\simeq$。
+\end{enumerate}
+\end{definition}
+
+将$\simeq$取为$\Gamma$上的等式即恢复定义\ref{def:3.8}。
+
+\begin{lemma}\label{lem:3.38}
+将$\mathfrak{E}^*_\Gamma$按定义\ref{def:3.37}解读，\S\ref{subsec:3.1}中断言的每个状态等式在$=$替换为$\simeq$后成立，且从$(\gamma_0, \mathrm{id}_\Gamma)$可达的每个状态的累积器尊重$\simeq$。
+\end{lemma}
+
+\begin{proof}
+累积器是逆元的复合，每个逆元由定义\ref{def:3.37}(2)尊重$\simeq$，而尊重$\simeq$的映射的复合尊重$\simeq$，基础情形为$\mathrm{id}_\Gamma$。然后\S\ref{subsec:3.1}的证明不经修改地通过，尊重正是将关系沿逆元传递的载体：由$g_2(\delta_2) \simeq \delta_1$和$g_1(\delta_1) \simeq \gamma$，尊重给出$(g_1 \circ g_2)(\delta_2) \simeq \gamma$，这是逆元复合所取的步骤，而定理\ref{thm:3.7}的健康性不变式由该步骤读作$\varphi(\gamma) \simeq \gamma_0$。
+\end{proof}
+
+定义\ref{def:3.19}所要求的交换性由同一引理读到$\simeq$之上，这样读取正是使其变得可达的原因：两个运算可能留下$\simeq_k$所等同的值而仍被视为交换的。对于两个运算，它比其提升所诱导的效应函数多要求一件事，即运算还产出结果。
+
+\begin{definition}\label{def:3.39}
+运算$a$和$a'$是独立的，当它们的提升在每个参数对处作为效应函数独立（定义\ref{def:3.19}），且一个的变换不干扰另一个产出的结果：
+\begin{equation}\label{eq:3.35}
+\forall x: X_a, g \in \mathfrak{M}(a'_\Sigma), \sigma \in \Sigma.\; \mathrm{pr}_3(a_\Sigma(x)(g(\sigma))) = \mathrm{pr}_3(a_\Sigma(x)(\sigma))
+\end{equation}
+对$a$和$a'$交换亦同，其中$\mathfrak{M}(a_\Sigma)$记提升$a_\Sigma(x)$在每个参数上的变换幺半群，正如定义\ref{def:3.34}将$\mathfrak{M}(a)$记为运算本身的变换幺半群。键$k$是交换的，当$\mathcal{A}_k$中任意两个运算独立，运算也被视为与自身独立。
+\end{definition}
+
+在不同键之间，该条件直接成立。
+
+\begin{theorem}\label{thm:3.40}
+不同键处的运算是独立的。
+\end{theorem}
+
+\begin{proof}
+设$a$属于$\mathcal{A}_k$，$a'$属于$\mathcal{A}_{k'}$且$k \neq k'$。由定义\ref{def:3.24}，$\mathfrak{M}(a_\Sigma)$的每个生成元具有形式$\sigma \mapsto \sigma[k \mapsto u(\sigma(k))]$，其中$u$是$\mathcal{V}_k$上的映射，或者是前向映射的提升或者是产出逆元的提升，$a'$在$k'$处亦然。两个这样的映射交换，每个只读写一个键且两个键不同，引理\ref{lem:3.18}(1)将交换性从生成元扩展到两个幺半群。对于第二个条件，$a_\Sigma$在$\sigma$处产出的逆元和结果仅由$\sigma(k)$确定，而$\mathfrak{M}(a'_\Sigma)$的每个生成元使$\sigma(k)$保持不变。
+\end{proof}
+
+值为独立添加和移除条目的表的键是交换的，路由注册或事件监听器注册是代表性情形：以任何顺序的两个注册留下一张对每个测试都相同回答的表，任一注册可以在另一个存在时撤回。值为有序链的键不是交换的，因为插入在另一个之前的中间件看到不同的请求，且两个顺序都不能在不干扰另一个的情况下撤回。开头例子的分配器按其接口发布的内容划分。当分配器给出的句柄不被键的任何运算比较时，$\simeq_k$可以在句柄重命名下关联两个堆，这正是CompCert关联程序与其翻译的内存状态的方式\cite{ref42}，分配是交换的；当地址是由等式比较的结果时，没有任何容许的$\simeq_k$使分配的两个顺序一致，该键不是交换的。
+
+组件所执行的是一系列运算，其中每个可能依赖于前面运算产出的内容，具有这种形状的效应函数正是以下定理所讨论的。
+
+\begin{definition}\label{def:3.41}
+协效应中介的效应函数构成最小集合$\mathfrak{E}^{\mathcal{A}}_\Sigma \subseteq \mathfrak{E}_\Sigma$，它包含单位元$\eta_\Sigma$并对以下封闭：对于键$k$、运算$a \in \mathcal{A}_k$、参数$x: X_a$和成员族$(e_b)_{b \in B_a}$，
+\begin{equation}\label{eq:3.36}
+\sigma \mapsto \mathbf{let}\;(\delta, s, b) = a_\Sigma(x)(\sigma)\;\mathbf{in}\;\mathbf{let}\;(\varepsilon, t) = e_b(\delta)\;\mathbf{in}\;(\varepsilon, s \circ t)
+\end{equation}
+仍是成员。每个阶段执行一个运算并根据结果选择后续，因此参数可以依赖于已获得的结果。成员中出现的运算是在每种结果选择下其阶段所执行的运算。
+\end{definition}
+
+\begin{theorem}\label{thm:3.42}
+设$e_1, e_2 \in \mathfrak{E}^{\mathcal{A}}_\Sigma$且两者运算都出现的每个键是交换的（定义\ref{def:3.39}）。则$e_1$和$e_2$是独立的（定义\ref{def:3.19}）。
+\end{theorem}
+
+\begin{proof}
+由对定义\ref{def:3.41}的构造的归纳，$\mathfrak{M}(e_i)$位于$e_i$中出现的运算的生成元所生成的子幺半群中：单位元生成平凡幺半群，一个阶段是$a_\Sigma(x)$与一个成员的$\diamond$-复合，引理\ref{lem:3.18}(2)适用于此。
+
+因此对于定义\ref{def:3.19}的条款(1)，由引理\ref{lem:3.18}(1)，只需$e_1$中出现的运算的生成元与$e_2$中出现的运算的生成元交换。当两个运算位于不同键时这是定理\ref{thm:3.40}，当它们位于同一键时该键承载两者的运算且由假设是交换的。
+
+对于条款(2)，取$g \in \mathfrak{M}(e_2)$，它是$e_2$中出现的运算的生成元的复合，对$e_1$的构造归纳。单位元在每个状态产出$\mathrm{id}_\Sigma$。在一个阶段，令$(\delta, s, b) = a_\Sigma(x)(\sigma)$和$(\varepsilon, t) = e_b(\delta)$，使得该阶段在$\sigma$处产出$s \circ t$。运算的独立性，每次应用于$g$的一个生成元，在$g(\sigma)$处再次产出$s$和$b$，因此选择相同的延续$e_b$，且条款(1)将其运行的状态置于$g(\delta)$，归纳假设在那里再次产出$t$。因此该阶段在$g(\sigma)$处产出$s \circ t$。
+\end{proof}
+
+组件与其环境之间的每次交互都通过上下文，类型族$\mathcal{V}$不受约束，因此系统可以将跨组件共享的每个位置绑定到自己的键上（\S\ref{subsubsec:3.3.1}）。组件的效应函数则是协效应中介的效应函数沿协效应投射的提升，独立性转移到该提升，其变换仅移动投射。这样\S\ref{subsubsec:3.1.3}留下的开放假设得以满足，随之而来的是整个组件系统的时空可组合性。
+
+该分解所划分的是计算的可交换部分与顺序敏感部分。可交换部分由效应承载：组件以其任务所要求的任何顺序执行它们，推论\ref{cor:3.21}以系统觉得方便的任何顺序逆转它们，没有两个组件相互约束。顺序敏感部分由协效应承载，因为运算不交换的键是顺序必须从效应外部施加的键，而两个位置可用于施加它。在组件内部，累积器施加它，以LIFO顺序逆转任何效应（定理\ref{thm:3.16}）。在组件之间，声明的协效应施加它，一个组件提供另一个声明的内容，提供先于声明的满足（\S\ref{subsubsec:3.2.2}）。可组合性由此在组件粒度而非单个效应粒度上获得，这正是\S\ref{sec:4}所工作的尺度。
+
+该定理的两个极限值得指出。将每个共享位置绑定到键上是范式的规则而非构造的性质，因此系统无法具体化为协效应的位置位于\S\ref{sec:6.1}的边界之外，也位于定理之外。键的交换性是该键所发布接口的性质，因此满足它是提供该键的组件而非消费该键的组件的义务。
+
+\subsubsection{上下文范式的定位}\label{subsubsec:3.3.3}
+
+编程范式在处理副作用的方式上根本不同。两个既有的极点定义了谱系：
+
+\textbf{显式状态穿线（函数式）。}为保持引用透明性，纯函数式语言将副作用建模为状态上的显式变换。状态幺半群$S \to (A, S)$\cite{ref23}将环境穿线通过每个计算。该方法产生强组合保证：效应在类型中可见且适于等式推理。然而，它施加了显著的人机工程成本：调用链中的每个函数必须接受和返回状态参数，即使它仅仅是将状态原封不动地传递。随着效应维度的增长（日志、配置、I/O），幺半群堆叠或效应处理器样板代码不断膨胀。
+
+\textbf{隐式变更（命令式/OOP）。}主流命令式语言允许组件修改共享状态和访问依赖，而无需在调用点显式声明。在效应方面，代表性例子是React的useEffect钩子：它在组件的内部fiber上注册持久副作用，然而效应目标和注册机制都不作为显式参数出现——识别依赖于隐藏运行时状态中的调用顺序位置。在协效应方面，Java的服务定位器模式（例如Spring的ApplicationContext.getBean(...)）在运行时从进程级注册表检索依赖，在每个调用点需要空值检查和类型转换；依赖关系是隐式的且散布在代码库中。更一般地，理解$f()$如何修改或依赖于系统需要传递性地阅读其实现。重构变得脆弱，因为移动或删除一个调用可能静默地破坏远处的恒等式。
+
+上下文范式结合了函数式方法的可追踪性与命令式方法的人机工程性。效应和协效应都通过显式的上下文参数中介。因此每个运算可归因于其被调用的特定上下文，进而归因于该上下文所属的组件。
+
+在结合两个极点的优势之外，上下文范式让开发者单独处理每个效应和依赖，并将它们自动组合为系统的行为。对于可逆效应，开发者提供每个原子运算的逆元，而任何复合的逆元由复合得出（\S\ref{subsec:3.1}），因此组件的拆卸是从其加载导出而非与其并列编写的。对于响应式协效应，组件仅声明它所需的依赖，运行时自动解析和重新连接它们（\S\ref{subsec:3.2}），在提供者被添加、移除或替换时保持它们一致连接。在两个方向上，原本依赖开发者规则的正确性成为范式的结构性性质。
